@@ -1,0 +1,20 @@
+{
+  "name": "claude-code-companion",
+  "interface": {
+    "displayName": "Claude Code Companion"
+  },
+  "plugins": [
+    {
+      "name": "claude-code-companion",
+      "source": {
+        "source": "local",
+        "path": "./plugins/claude-code-companion"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

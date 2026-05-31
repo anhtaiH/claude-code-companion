@@ -8,8 +8,9 @@ export const ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
 );
-export const COMPANION = path.join(ROOT, 'scripts', 'claude-companion.mjs');
-export const MCP_SERVER = path.join(ROOT, 'scripts', 'mcp-server.mjs');
+export const PLUGIN_ROOT = path.join(ROOT, 'plugins', 'claude-code-companion');
+export const COMPANION = path.join(PLUGIN_ROOT, 'scripts', 'claude-companion.mjs');
+export const MCP_SERVER = path.join(PLUGIN_ROOT, 'scripts', 'mcp-server.mjs');
 
 export function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'claude-code-companion-'));

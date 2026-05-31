@@ -3,47 +3,49 @@
 Claude Code Companion lets Codex delegate read-only work to Claude Code without
 leaving the current Codex session.
 
-This is not a nicer wrapper around `claude`. The product is cross-model,
-cross-harness delegation: Codex stays in charge, Claude Code runs an independent
-pass, and the result returns to Codex with a session id for follow-up.
+The product is cross-model, cross-harness delegation. Codex stays in charge,
+Claude Code runs an independent pass, and the result returns to Codex with a job
+id and Claude session id for follow-up.
 
-## What You Get
+## Install
 
-- One public MCP tool: `claude_code`.
-- One in-session workflow: delegate, check status, fetch result, continue.
-- Read-only Claude Code passes for review, adversarial review, diagnosis,
-  planning, and research.
-- Local background job state keyed by workspace.
-- Claude session ids for resumable handoff.
-- A Codex skill that teaches the agent when and how to call the tool.
+No clone required:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anhtaiH/claude-code-companion/main/install.sh | bash
+```
+
+Then start a new Codex session and ask:
+
+```text
+Use Claude Code Companion to check setup.
+```
+
+The installer uses Codex's native plugin system:
+
+```bash
+codex plugin marketplace add anhtaiH/claude-code-companion
+codex plugin add claude-code-companion@claude-code-companion
+```
+
+Rerun the installer to update.
 
 ## Requirements
 
 - Node.js 18.18 or newer.
-- Codex CLI with MCP support.
+- Codex CLI with plugin and MCP support.
 - Claude Code CLI installed and authenticated.
-- Git, for review targets that inspect diffs.
+- Git for diff-based reviews.
 
-## Install
+## How You Use It
 
-```bash
-git clone https://github.com/anhtaih/claude-code-companion.git
-cd claude-code-companion
-npm run check
-codex mcp add claude-code-companion -- node "$PWD/scripts/mcp-server.mjs"
-```
-
-Start a new Codex session after registering the MCP server.
-
-## How To Use
-
-Ask Codex naturally:
+Ask Codex naturally from the project you are working in:
 
 ```text
 Use Claude Code Companion to review the current diff with max_budget_usd 0.25.
 ```
 
-Codex should call the single tool:
+Codex should call the single MCP tool:
 
 ```json
 {
@@ -54,7 +56,7 @@ Codex should call the single tool:
 }
 ```
 
-For longer work, Codex can use background mode:
+For longer work, Codex can start Claude in the background:
 
 ```json
 {
@@ -68,7 +70,7 @@ For longer work, Codex can use background mode:
 }
 ```
 
-Then Codex stays in the same session and calls:
+Codex can then stay in the same session and call:
 
 ```json
 { "action": "status" }
@@ -78,14 +80,14 @@ Then Codex stays in the same session and calls:
 { "action": "result", "job_id": "review-..." }
 ```
 
-You should not need to run `claude`, `claude-companion.mjs`, or any other shell
-wrapper during normal use.
+You should not need to run `claude` or any project-specific wrapper during
+normal use.
 
 ## API
 
-Everything goes through the `claude_code` MCP tool.
+Everything goes through one public MCP tool: `claude_code`.
 
-### Actions
+Actions:
 
 - `setup`: check Node, Claude Code, Claude auth, and local state.
 - `delegate`: start Claude Code work.
@@ -93,16 +95,15 @@ Everything goes through the `claude_code` MCP tool.
 - `result`: fetch a completed job result.
 - `cancel`: stop a running background job.
 
-### Delegation Kinds
+Delegation kinds:
 
-- `review`: read-only code review of the current working tree or branch diff.
-- `adversarial_review`: skeptical risk review focused on assumptions, rollback,
-  data loss, auth, concurrency, and hidden coupling.
+- `review`: read-only code review of the working tree or branch diff.
+- `adversarial_review`: skeptical review for hidden risk and bad assumptions.
 - `diagnose`: root-cause analysis.
 - `plan`: implementation or verification planning.
 - `research`: read-only repository investigation.
 
-### Common Inputs
+Common inputs:
 
 - `cwd`: workspace root. Defaults to the MCP server process working directory.
 - `target`: `working_tree`, `branch`, or `none`.
@@ -115,28 +116,19 @@ Everything goes through the `claude_code` MCP tool.
 - `timeout_ms`: optional timeout.
 - `model` and `effort`: optional Claude Code runtime controls.
 
-## Prompt Templates
+MCP prompt templates are also available for hosts that expose them:
+`claude_review`, `claude_adversarial_review`, `claude_diagnose`, and
+`claude_plan`.
 
-Hosts that render MCP prompts can expose these as slash commands, command
-palette entries, or prompt pickers. They all route through `claude_code`.
-
-- `claude_review`
-- `claude_adversarial_review`
-- `claude_diagnose`
-- `claude_plan`
-
-## Architecture
+## How It Works
 
 ```text
 Codex session
   -> MCP tool: claude_code
-  -> scripts/mcp-server.mjs
-  -> internal transport: scripts/claude-companion.mjs
+  -> plugins/claude-code-companion/scripts/mcp-server.mjs
+  -> plugins/claude-code-companion/scripts/claude-companion.mjs
   -> claude -p --output-format json --tools ""
 ```
-
-The companion script is internal transport. It keeps the MCP server debuggable,
-but it is not the product API.
 
 Job state is stored under:
 
@@ -154,13 +146,9 @@ V1 is read-only by default. Claude is invoked with no Claude tools:
 claude -p --output-format json --tools ""
 ```
 
-The companion rejects write-capable or bypass-style options, including:
-
-- `write`
-- `edit`
-- `permission-mode`
-- `dangerously-skip-permissions`
-- `allow-dangerously-skip-permissions`
+The companion rejects write-capable or bypass-style options, including `write`,
+`edit`, `permission-mode`, `dangerously-skip-permissions`, and
+`allow-dangerously-skip-permissions`.
 
 The companion refuses to persist output that matches common secret-like patterns
 such as private keys, AWS access keys, or `sk-` style tokens. This is a
@@ -169,17 +157,11 @@ guardrail, not a substitute for keeping secrets out of prompts and diffs.
 For workplace projects, use this only when your organization allows sending
 repository context to Anthropic Claude Code.
 
-## Project Principles
-
-- One public tool, not a menu of wrappers.
-- Agent-native by default: stay inside Codex.
-- Explicit controls for budget, timeout, target, and background work.
-- Resumable handoff through job ids and Claude session ids.
-- Claude output is advisory. Codex verifies before editing or claiming done.
-
 ## Development
 
 ```bash
+git clone https://github.com/anhtaiH/claude-code-companion.git
+cd claude-code-companion
 npm run check
 ```
 

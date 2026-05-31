@@ -4,15 +4,15 @@
   "type": "module",
   "description": "Codex plugin and MCP companion for read-only Claude Code review, diagnosis, and planning.",
   "license": "Apache-2.0",
-  "author": "anhtaih",
+  "author": "anhtaiH",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anhtaih/claude-code-companion.git"
+    "url": "git+https://github.com/anhtaiH/claude-code-companion.git"
   },
   "bugs": {
-    "url": "https://github.com/anhtaih/claude-code-companion/issues"
+    "url": "https://github.com/anhtaiH/claude-code-companion/issues"
   },
-  "homepage": "https://github.com/anhtaih/claude-code-companion#readme",
+  "homepage": "https://github.com/anhtaiH/claude-code-companion#readme",
   "keywords": [
     "codex",
     "codex-plugin",
@@ -26,15 +26,12 @@
     "node": ">=18.18.0"
   },
   "files": [
-    ".codex-plugin/",
-    ".mcp.json",
-    "prompts/",
-    "schemas/",
-    "scripts/",
-    "skills/",
+    ".agents/plugins/marketplace.json",
+    "plugins/claude-code-companion/",
     "tests/",
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
+    "install.sh",
     "PRODUCT.md",
     "README.md",
     "SECURITY.md",
@@ -43,6 +40,6 @@
   "scripts": {
     "check": "npm run validate && npm test",
     "test": "node --test tests/*.test.mjs",
-    "validate": "node scripts/validate-plugin.mjs"
+    "validate": "node plugins/claude-code-companion/scripts/validate-plugin.mjs"
   }
 }

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { listJobs, upsertJob } from '../scripts/lib/state.mjs';
+import {
+  listJobs,
+  upsertJob,
+} from '../plugins/claude-code-companion/scripts/lib/state.mjs';
 import {
   buildEnv,
   COMPANION,

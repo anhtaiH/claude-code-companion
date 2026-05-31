@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Use Claude Code from Codex for read-only review, diagnosis, and planning.",
   "author": {
-    "name": "anhtaih"
+    "name": "anhtaiH"
   },
   "license": "Apache-2.0",
   "keywords": ["claude-code", "review", "multi-agent", "model-diversity"],
@@ -13,7 +13,7 @@
     "displayName": "Claude Code Companion",
     "shortDescription": "Ask Claude Code for read-only second-model help",
     "longDescription": "Claude Code Companion lets Codex start local Claude Code review, adversarial review, diagnosis, and planning jobs. It uses the user's local Claude Code CLI and keeps v1 read-only by default.",
-    "developerName": "anhtaih",
+    "developerName": "anhtaiH",
     "category": "Developer Tools",
     "capabilities": ["Read", "Interactive"],
     "defaultPrompt": [
