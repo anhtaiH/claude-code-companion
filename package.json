@@ -28,7 +28,6 @@
   "files": [
     ".codex-plugin/",
     ".mcp.json",
-    "docs/",
     "prompts/",
     "schemas/",
     "scripts/",

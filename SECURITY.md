@@ -30,5 +30,5 @@ Security-sensitive areas include:
 
 ## Current Safety Posture
 
-V1 is read-only by default and invokes Claude with no Claude tools. See
-[docs/security-model.md](docs/security-model.md).
+V1 is read-only by default and invokes Claude with no Claude tools. See the
+security model in [README.md](README.md).

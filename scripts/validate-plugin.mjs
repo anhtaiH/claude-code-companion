@@ -60,11 +60,6 @@ try {
     'CONTRIBUTING.md',
     'SECURITY.md',
     'CODE_OF_CONDUCT.md',
-    'docs/agent-native-dx.md',
-    'docs/install.md',
-    'docs/usage.md',
-    'docs/security-model.md',
-    'docs/project-brief.md',
   ]) {
     assertPath(requiredFile, 'public repo file');
   }
