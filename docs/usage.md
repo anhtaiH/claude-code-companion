@@ -1,8 +1,49 @@
 # Usage
 
-## Direct CLI
+## Preferred Path: Codex Agent Tool Use
 
-The companion CLI is useful for debugging because it avoids any MCP layer:
+Register the MCP server once:
+
+```bash
+codex mcp add claude-code-companion -- node /path/to/claude-code-companion/scripts/mcp-server.mjs
+```
+
+Then start a new Codex session in any project and ask naturally:
+
+```text
+Use Claude Code Companion to review the current diff with max_budget_usd 0.25.
+```
+
+The agent should call the `consult` MCP tool. That is the primary API.
+
+Typical modes:
+
+```json
+{ "mode": "review", "target": "working_tree", "max_budget_usd": 0.25 }
+```
+
+```json
+{
+  "mode": "adversarial_review",
+  "target": "branch",
+  "base": "main",
+  "focus": "auth, rollback, and data loss",
+  "max_budget_usd": 0.35
+}
+```
+
+```json
+{
+  "mode": "diagnose",
+  "prompt": "Diagnose why this test is flaky. Do not suggest edits.",
+  "max_budget_usd": 0.2
+}
+```
+
+## Direct CLI For Debugging
+
+The companion CLI is useful when you need to debug the plugin itself because it
+avoids the MCP layer:
 
 ```bash
 node scripts/claude-companion.mjs setup --cwd /path/to/repo
@@ -89,19 +130,13 @@ node scripts/claude-companion.mjs cancel --cwd /path/to/repo <job-id>
 
 ## Codex MCP Prompts
 
-After registering the MCP server:
+The MCP server also exposes prompt templates for hosts that render MCP prompts
+as slash commands, command palette entries, or prompt pickers:
 
-```text
-Use Claude Code Companion to run a read-only review of the working tree with max_budget_usd 0.25.
-```
-
-```text
-Use Claude Code Companion for an adversarial review of this branch against main. Focus on auth and data deletion.
-```
-
-```text
-Ask Claude Code Companion for a read-only diagnosis of this failing test. Return the Claude session ID.
-```
+- `review_current_diff`
+- `adversarial_review`
+- `diagnose_with_claude`
+- `plan_with_claude`
 
 ## Workplace Use
 

@@ -55,10 +55,12 @@ try {
 
   for (const requiredFile of [
     'README.md',
+    'PRODUCT.md',
     'LICENSE',
     'CONTRIBUTING.md',
     'SECURITY.md',
     'CODE_OF_CONDUCT.md',
+    'docs/agent-native-dx.md',
     'docs/install.md',
     'docs/usage.md',
     'docs/security-model.md',

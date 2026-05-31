@@ -25,8 +25,9 @@ The companion should feel boring in the right way:
 ## V1 Scope
 
 - Codex plugin manifest.
-- MCP server with `setup`, `review`, `adversarial_review`, `task`, `status`,
-  `result`, and `cancel`.
+- MCP server with primary `consult` handoff plus `setup`, `review`,
+  `adversarial_review`, `task`, `status`, `result`, and `cancel`.
+- MCP prompt templates for common user-invoked workflows.
 - Companion CLI for direct debugging.
 - Local job board under `~/.local/state/claude-code-companion`.
 - Read-only Claude calls through `claude -p --output-format json --tools ""`.
@@ -44,7 +45,8 @@ The companion should feel boring in the right way:
 ## Success Criteria
 
 - A user can install the repo once and use it from multiple projects.
-- The CLI works even before Codex MCP registration.
+- Agents have one obvious primary tool for Claude handoff.
+- The CLI works as a debug path before Codex MCP registration.
 - MCP tools are thin wrappers over the companion CLI.
 - Review outputs are structured and resumable.
 - Safety posture is obvious from both docs and tests.

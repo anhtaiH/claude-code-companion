@@ -9,6 +9,7 @@ import {
   initGitRepo,
   installFakeClaude,
   makeTempDir,
+  MCP_SERVER,
   run,
 } from './helpers.mjs';
 
@@ -246,4 +247,96 @@ test('job state keeps only the latest fifty jobs', () => {
       delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
     else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
   }
+});
+
+test('MCP server exposes agent-native consult tool and prompt templates', () => {
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '0.0.0' },
+      },
+    },
+    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+    { jsonrpc: '2.0', id: 3, method: 'prompts/list', params: {} },
+    {
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'prompts/get',
+      params: {
+        name: 'review_current_diff',
+        arguments: { max_budget_usd: '0.25', focus: 'API compatibility' },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { input });
+  assert.equal(result.status, 0, result.stderr);
+  const responses = result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+
+  assert.deepEqual(responses[0].result.capabilities, {
+    tools: {},
+    prompts: {},
+  });
+  assert.ok(
+    responses[1].result.tools.some((tool) => tool.name === 'consult'),
+  );
+  assert.ok(
+    responses[3].result.messages[0].content.text.includes('consult'),
+  );
+});
+
+test('MCP consult tool delegates to fake Claude review', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '0.0.0' },
+      },
+    },
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'consult',
+        arguments: {
+          mode: 'review',
+          cwd: repo,
+          target: 'working_tree',
+          max_budget_usd: 0.01,
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  const responses = result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const toolText = responses[1].result.content[0].text;
+  const payload = JSON.parse(toolText);
+  assert.equal(payload.review.verdict, 'changes-needed');
+  assert.equal(payload.sessionId, 'fake-session-1');
 });

@@ -5,7 +5,7 @@
 ```text
 Codex
   |
-  | MCP tool call
+  | skill-guided MCP tool call or MCP prompt
   v
 scripts/mcp-server.mjs
   |
@@ -20,9 +20,13 @@ claude -p --output-format json --tools ""
 
 ## Design Choices
 
-The MCP server stays thin. It validates the MCP shape and delegates all real
-work to the companion CLI. This keeps debugging simple because every MCP action
-has a direct CLI equivalent.
+The MCP server stays thin. It exposes the agent-native API, validates the MCP
+shape, and delegates all real work to the companion CLI. This keeps debugging
+simple because every MCP action has a direct CLI equivalent.
+
+The primary MCP tool is `consult`. It maps review, adversarial review,
+diagnosis, planning, and research modes onto the lower-level companion commands.
+The lower-level tools remain available for compatibility and job management.
 
 The companion owns:
 
@@ -35,6 +39,15 @@ The companion owns:
 - background process lifecycle
 - cancellation
 - rendering JSON or text output
+
+## Agent-Native Surface
+
+The plugin ships three layers:
+
+- Skill: tells Codex when to consult Claude and how to handle advisory output.
+- MCP tool: `consult` is model-controlled and optimized for automatic agent use.
+- MCP prompts: reusable user-controlled workflows that hosts can expose as slash
+  commands or command-palette entries.
 
 ## Job State
 

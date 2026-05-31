@@ -15,7 +15,8 @@ problem statement.
 - Asks Claude for diagnosis, planning, or research without asking it to edit.
 - Stores local job state by workspace so long-running jobs can be checked later.
 - Returns Claude session IDs so you can resume directly with `claude -r`.
-- Exposes both a CLI and MCP tools for Codex.
+- Exposes a primary agent-facing MCP tool, `consult`, plus MCP prompt templates.
+- Keeps the direct CLI as a debug and installation escape hatch.
 
 ## What It Does Not Do
 
@@ -57,13 +58,13 @@ codex mcp add claude-code-companion -- node "$PWD/scripts/mcp-server.mjs"
 codex mcp list --json
 ```
 
-Run a direct setup check:
+Run a direct setup check if you want to verify outside Codex:
 
 ```bash
 node scripts/claude-companion.mjs setup --cwd /path/to/your/repo
 ```
 
-Ask for a read-only review:
+Ask for a read-only review through the debug CLI:
 
 ```bash
 node scripts/claude-companion.mjs review \
@@ -90,8 +91,18 @@ After adding the MCP server, start a new Codex session and ask:
 Use Claude Code Companion to run a read-only review of this working tree with max_budget_usd 0.25.
 ```
 
+The agent-facing API is intentionally small. Most use should go through:
+
+- `consult` with `mode: review`
+- `consult` with `mode: adversarial_review`
+- `consult` with `mode: diagnose`
+- `consult` with `mode: plan`
+- `consult` with `mode: research`
+
 Useful MCP tools:
 
+- `consult`: primary handoff to Claude Code for review, diagnosis, planning,
+  and research.
 - `setup`: check Node, Claude Code, auth, and local state.
 - `review`: review a working tree or `base...HEAD` diff.
 - `adversarial_review`: challenge the implementation and assumptions.
@@ -104,6 +115,7 @@ Useful MCP tools:
 
 - [Install](docs/install.md)
 - [Usage](docs/usage.md)
+- [Agent-native DX](docs/agent-native-dx.md)
 - [Security model](docs/security-model.md)
 - [Architecture](docs/architecture.md)
 - [Project brief](docs/project-brief.md)
