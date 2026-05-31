@@ -446,37 +446,52 @@ test('MCP claude_code delegate action routes to fake Claude review', () => {
   assert.equal(payload.sessionId, 'fake-session-1');
 });
 
-test('MCP claude_code routes focused task modes to fake Claude', () => {
+test('MCP claude_code delegate action supports every advertised kind', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
   const env = buildEnv(binDir);
-  const input = [
-    {
+  let id = 0;
+  const input = EXPECTED_KINDS.map((kind) => {
+    id += 1;
+    return {
       jsonrpc: '2.0',
-      id: 1,
+      id,
       method: 'tools/call',
       params: {
         name: 'claude_code',
         arguments: {
           action: 'delegate',
-          kind: 'test_gap_review',
+          kind,
           cwd: repo,
-          prompt: 'Find missing tests for this change.',
+          target: ['review', 'adversarial_review'].includes(kind)
+            ? 'working_tree'
+            : 'none',
+          prompt: `Exercise ${kind}.`,
         },
       },
-    },
-  ]
+    };
+  })
     .map((message) => JSON.stringify(message))
     .join('\n');
 
   const result = run(process.execPath, [MCP_SERVER], { env, input });
   assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(
-    JSON.parse(result.stdout).result.content[0].text,
-  );
-  assert.equal(payload.rawOutput, 'Handled task');
-  assert.equal(payload.sessionId, 'fake-session-1');
+  const responses = result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+
+  assert.equal(responses.length, EXPECTED_KINDS.length);
+  for (const [index, kind] of EXPECTED_KINDS.entries()) {
+    const payload = JSON.parse(responses[index].result.content[0].text);
+    assert.equal(payload.sessionId, 'fake-session-1', kind);
+    if (['review', 'adversarial_review'].includes(kind)) {
+      assert.equal(payload.review.verdict, 'changes-needed', kind);
+    } else {
+      assert.equal(payload.rawOutput, 'Handled task', kind);
+    }
+  }
 });
 
 test('MCP claude_code manages background jobs through the same tool', () => {
