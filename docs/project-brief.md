@@ -11,12 +11,13 @@ user is allowed to send local repository context to Claude Code.
 
 ## Positioning
 
-Codex remains the primary coding agent. Claude acts as a companion reviewer or
-planner with a different model family and a resumable Claude Code session.
+Codex remains the primary coding agent. Claude acts as a companion reviewer,
+diagnostician, or planner with a different model family and a resumable Claude
+Code session.
 
 The companion should feel boring in the right way:
 
-- predictable commands
+- one public MCP tool
 - explicit budgets
 - local state
 - no write permissions by default
@@ -25,10 +26,11 @@ The companion should feel boring in the right way:
 ## V1 Scope
 
 - Codex plugin manifest.
-- MCP server with primary `consult` handoff plus `setup`, `review`,
-  `adversarial_review`, `task`, `status`, `result`, and `cancel`.
+- MCP server with one public tool: `claude_code`.
+- `claude_code` actions for `setup`, `delegate`, `status`, `result`, and
+  `cancel`.
 - MCP prompt templates for common user-invoked workflows.
-- Companion CLI for direct debugging.
+- Internal companion CLI for maintainers and debugging.
 - Local job board under `~/.local/state/claude-code-companion`.
 - Read-only Claude calls through `claude -p --output-format json --tools ""`.
 - Fake-Claude test harness.
@@ -45,8 +47,9 @@ The companion should feel boring in the right way:
 ## Success Criteria
 
 - A user can install the repo once and use it from multiple projects.
-- Agents have one obvious primary tool for Claude handoff.
-- The CLI works as a debug path before Codex MCP registration.
-- MCP tools are thin wrappers over the companion CLI.
+- Agents have one obvious public tool for Claude handoff.
+- Normal use stays inside a single Codex session.
+- The CLI works as an internal debug path before Codex MCP registration.
+- The MCP tool is a thin adapter over the companion transport.
 - Review outputs are structured and resumable.
 - Safety posture is obvious from both docs and tests.

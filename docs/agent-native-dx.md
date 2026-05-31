@@ -1,92 +1,81 @@
 # Agent-Native DX
 
-Claude Code Companion is designed for an agent working inside Codex. The CLI is
-still useful, but it is not the main product surface.
+Claude Code Companion should feel like a delegation primitive inside Codex, not
+a command-line utility.
 
-## Is This A Skill?
+## Product Stance
 
-The plugin includes a Codex skill and an MCP server.
-
-- The skill is the playbook. It tells Codex when Claude is useful, what safety
-  boundaries apply, and how to present results.
-- The MCP tools are the executable API. They are model-controlled, so an agent
-  can discover them and call them when the current task warrants a Claude pass.
-- The MCP prompts are user-controlled templates. They give slash-command or
-  command-palette style entry points for common workflows.
-
-That means the right mental model is not "run this script." The model is:
+The user stays in one Codex session. Codex decides when a Claude pass helps,
+calls one MCP tool, waits or polls if needed, then returns the result to the
+same conversation.
 
 ```text
 Codex task
-  -> skill guidance decides whether a Claude pass helps
-  -> consult tool starts Claude Code read-only work
-  -> status/result complete background jobs
-  -> Codex verifies and acts
+  -> Codex calls claude_code
+  -> Claude Code runs read-only work locally
+  -> claude_code returns a result, job id, or session id
+  -> Codex verifies and continues
 ```
 
-## Primary API
+## One Public API
 
-Use one tool first:
+The public MCP API is:
 
 ```text
-consult
+claude_code
 ```
 
-`consult` accepts a mode:
-
-- `review`: normal second-model code review
-- `adversarial_review`: skeptical risk review
-- `diagnose`: root-cause analysis
-- `plan`: implementation or verification planning
-- `research`: read-only repository investigation
-
-Low-level tools still exist for compatibility and job management:
+It has five actions:
 
 - `setup`
-- `review`
-- `adversarial_review`
-- `task`
+- `delegate`
 - `status`
 - `result`
 - `cancel`
 
-Agents should prefer `consult` unless they need a specific low-level behavior.
+Delegation uses `kind`:
 
-## Explicit User Entry Points
-
-MCP prompts expose reusable workflows:
-
-- `review_current_diff`
+- `review`
 - `adversarial_review`
-- `diagnose_with_claude`
-- `plan_with_claude`
+- `diagnose`
+- `plan`
+- `research`
 
-Hosts may render these as slash commands, command palette entries, buttons, or
-prompt pickers. The protocol does not force one UI pattern.
+This gives the agent one obvious tool while still preserving clear typed
+intent.
+
+## Why Not A CLI-First Wrapper
+
+A shell wrapper does not solve the important problem. Anyone can run
+`claude -p` directly. The useful product is the cross-model harness handoff:
+Codex can ask Claude for a second-model pass, receive structured state, and keep
+the user in one agent session.
+
+The CLI in this repo exists because the MCP server needs an implementation
+transport. It is for maintainers and debugging, not normal user workflow.
+
+## Is This A Skill?
+
+The skill is the instruction layer. It teaches Codex when to use Claude Code
+Companion and what boundaries apply.
+
+The MCP tool is the executable layer. Because MCP tools are model-controlled,
+Codex can invoke `claude_code` when the current task warrants it.
+
+MCP prompts are optional user-entry templates. A host may surface them as slash
+commands or command-palette entries, but they still route through the one
+`claude_code` tool.
 
 ## API Design Rules
 
-1. One primary verb beats many similar verbs.
-2. Mode is explicit.
-3. Budget and timeout are first-class.
-4. Read-only posture is visible in descriptions and tests.
-5. Background work always returns a job id.
-6. Completed work returns a Claude session id when available.
-7. Tool descriptions explain purpose, when to use, limitations, and parameter
-   effects.
-
-## Why This Shape
-
-Current agent tooling is converging on a layered model:
-
-- Skills or instructions capture reusable procedures.
-- MCP tools expose executable capabilities the model can call.
-- MCP prompts provide explicit user-invoked workflows.
-- Handoffs model specialist delegation as tool calls with typed arguments.
-
-Claude Code Companion follows that stack. It keeps the user-visible command
-surface small while giving the agent enough structured control to choose the
-right Claude pass at the right time.
+1. One public tool.
+2. One routing field: `action`.
+3. One delegation field: `kind`.
+4. Budget and timeout are explicit.
+5. Background jobs return a job id.
+6. Results return Claude session ids when available.
+7. Claude remains read-only in v1.
+8. Codex owns verification before acting on Claude output.
 
 ## Sources
 

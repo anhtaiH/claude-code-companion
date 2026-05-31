@@ -249,7 +249,7 @@ test('job state keeps only the latest fifty jobs', () => {
   }
 });
 
-test('MCP server exposes agent-native consult tool and prompt templates', () => {
+test('MCP server exposes exactly one agent-native tool and prompt templates', () => {
   const input = [
     {
       jsonrpc: '2.0',
@@ -268,7 +268,7 @@ test('MCP server exposes agent-native consult tool and prompt templates', () => 
       id: 4,
       method: 'prompts/get',
       params: {
-        name: 'review_current_diff',
+        name: 'claude_review',
         arguments: { max_budget_usd: '0.25', focus: 'API compatibility' },
       },
     },
@@ -287,15 +287,14 @@ test('MCP server exposes agent-native consult tool and prompt templates', () => 
     tools: {},
     prompts: {},
   });
+  assert.equal(responses[1].result.tools.length, 1);
+  assert.equal(responses[1].result.tools[0].name, 'claude_code');
   assert.ok(
-    responses[1].result.tools.some((tool) => tool.name === 'consult'),
-  );
-  assert.ok(
-    responses[3].result.messages[0].content.text.includes('consult'),
+    responses[3].result.messages[0].content.text.includes('claude_code'),
   );
 });
 
-test('MCP consult tool delegates to fake Claude review', () => {
+test('MCP claude_code delegate action routes to fake Claude review', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
@@ -316,9 +315,10 @@ test('MCP consult tool delegates to fake Claude review', () => {
       id: 2,
       method: 'tools/call',
       params: {
-        name: 'consult',
+        name: 'claude_code',
         arguments: {
-          mode: 'review',
+          action: 'delegate',
+          kind: 'review',
           cwd: repo,
           target: 'working_tree',
           max_budget_usd: 0.01,
@@ -339,4 +339,78 @@ test('MCP consult tool delegates to fake Claude review', () => {
   const payload = JSON.parse(toolText);
   assert.equal(payload.review.verdict, 'changes-needed');
   assert.equal(payload.sessionId, 'fake-session-1');
+});
+
+test('MCP claude_code manages background jobs through the same tool', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'slow' });
+  const startInput = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'diagnose',
+          cwd: repo,
+          prompt: 'slow diagnosis',
+          background: true,
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const started = run(process.execPath, [MCP_SERVER], {
+    env,
+    input: startInput,
+  });
+  assert.equal(started.status, 0, started.stderr);
+  const startPayload = JSON.parse(
+    JSON.parse(started.stdout).result.content[0].text,
+  );
+  const jobId = startPayload.jobId;
+  assert.match(jobId, /^task-/);
+
+  const manageInput = [
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: { action: 'status', cwd: repo, job_id: jobId },
+      },
+    },
+    {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: { action: 'cancel', cwd: repo, job_id: jobId },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const managed = run(process.execPath, [MCP_SERVER], {
+    env,
+    input: manageInput,
+  });
+  assert.equal(managed.status, 0, managed.stderr);
+  const responses = managed.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const statusPayload = JSON.parse(responses[0].result.content[0].text);
+  const cancelPayload = JSON.parse(responses[1].result.content[0].text);
+  assert.equal(statusPayload.jobs[0].id, jobId);
+  assert.equal(cancelPayload.status, 'cancelled');
 });

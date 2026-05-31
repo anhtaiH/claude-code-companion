@@ -11,170 +11,49 @@ const COMPANION = path.join(SCRIPT_DIR, 'claude-companion.mjs');
 
 const tools = [
   {
-    name: 'consult',
+    name: 'claude_code',
     description:
-      'Primary agent-facing handoff to Claude Code. Use this when Codex wants a read-only second-model review, adversarial review, diagnosis, plan, or research pass. It invokes the local Claude Code CLI with no Claude tools by default, returns structured JSON text, and includes a Claude session id or job id when available. Do not use it for edits; use it for independent analysis that Codex will verify before acting.',
+      'The single agent-native Claude Code Companion API. Use this from inside Codex to delegate read-only review, adversarial review, diagnosis, planning, or research to the local Claude Code CLI, then return the result to the Codex agent. Also use this same tool to check setup, inspect status, fetch results, or cancel a background delegation. Do not call shell commands directly for normal use.',
     inputSchema: {
       type: 'object',
-      required: ['mode'],
+      required: ['action'],
       properties: {
-        mode: {
+        action: {
+          type: 'string',
+          enum: ['setup', 'delegate', 'status', 'result', 'cancel'],
+          description:
+            'Use setup to check readiness, delegate to start Claude work, status to inspect jobs, result to fetch a completed job, and cancel to stop a running job.',
+        },
+        kind: {
           type: 'string',
           enum: ['review', 'adversarial_review', 'diagnose', 'plan', 'research'],
           description:
-            'Type of Claude consultation. Use review for ordinary code review, adversarial_review for skeptical risk review, diagnose for root-cause analysis, plan for implementation planning, and research for read-only investigation.',
+            'Required for action delegate. review inspects code, adversarial_review challenges risk and assumptions, diagnose investigates root cause, plan drafts an implementation or verification plan, and research performs read-only repository investigation.',
         },
         cwd: {
           type: 'string',
           description:
-            'Workspace root to inspect. Defaults to the MCP server process working directory.',
+            'Workspace root. Defaults to the MCP server process working directory.',
         },
         target: {
           type: 'string',
           enum: ['working_tree', 'branch', 'none'],
           description:
-            'Review target. Use working_tree for uncommitted changes, branch with base for base...HEAD review, and none for prompt-only diagnosis or planning.',
-        },
-        base: {
-          type: 'string',
-          description:
-            'Base ref for branch review, for example main. When set for review modes, the companion reviews base...HEAD.',
-        },
-        prompt: {
-          type: 'string',
-          description:
-            'Task prompt for diagnose, plan, or research modes. For review modes this is optional extra instruction.',
-        },
-        focus: {
-          type: 'string',
-          description:
-            'Optional focus area, such as security, migrations, API compatibility, data loss, or flaky tests.',
-        },
-        model: {
-          type: 'string',
-          description: 'Optional Claude model override passed to Claude Code.',
-        },
-        effort: {
-          type: 'string',
-          enum: ['low', 'medium', 'high', 'xhigh', 'max'],
-          description: 'Optional reasoning effort hint passed to Claude Code.',
-        },
-        max_budget_usd: {
-          type: 'number',
-          description:
-            'Optional max spend guardrail for this Claude Code call, in US dollars.',
-        },
-        timeout_ms: {
-          type: 'integer',
-          description:
-            'Optional timeout in milliseconds. Use a larger timeout for background reviews on large diffs.',
-        },
-        background: {
-          type: 'boolean',
-          description:
-            'When true, start a background job and return immediately with a job id. Use status and result to finish the handoff.',
-        },
-        resume_last: {
-          type: 'boolean',
-          description:
-            'For diagnose, plan, or research modes, resume the latest completed Claude task session for the same workspace.',
-        },
-        fresh: {
-          type: 'boolean',
-          description:
-            'For diagnose, plan, or research modes, force a fresh Claude session instead of resuming.',
-        },
-      },
-    },
-  },
-  {
-    name: 'setup',
-    description:
-      'Check Claude Code Companion readiness for the current workspace. Use this when Claude availability or auth state is unknown. It checks Node, the local claude binary, Claude auth status, and the companion state directory without exposing account details.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        cwd: {
-          type: 'string',
-          description:
-            'Workspace root to check. Defaults to the MCP server process working directory.',
-        },
-      },
-    },
-  },
-  {
-    name: 'review',
-    description:
-      'Low-level read-only Claude Code review of the working tree or branch diff. Prefer consult for ordinary agent use. This tool returns structured review JSON, a Claude session id, and a resume hint; it does not ask Claude to edit files.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        cwd: {
-          type: 'string',
-          description:
-            'Workspace root to inspect. Defaults to the MCP server process working directory.',
+            'Delegation target. Use working_tree for uncommitted changes, branch with base for base...HEAD, and none for prompt-only diagnosis, planning, or research.',
         },
         base: {
           type: 'string',
           description: 'Base ref for branch review, for example main.',
         },
-        scope: {
-          type: 'string',
-          enum: ['auto', 'working-tree', 'branch'],
-          description:
-            'Diff target. auto uses branch when base is set, otherwise working-tree.',
-        },
-        model: {
-          type: 'string',
-          description: 'Optional Claude model override passed to Claude Code.',
-        },
-        effort: {
-          type: 'string',
-          enum: ['low', 'medium', 'high', 'xhigh', 'max'],
-          description: 'Optional reasoning effort hint passed to Claude Code.',
-        },
-        max_budget_usd: {
-          type: 'number',
-          description: 'Optional max spend guardrail in US dollars.',
-        },
-        timeout_ms: {
-          type: 'integer',
-          description: 'Optional timeout in milliseconds.',
-        },
-        background: {
-          type: 'boolean',
-          description:
-            'When true, start a background job and return immediately with a job id.',
-        },
-      },
-    },
-  },
-  {
-    name: 'adversarial_review',
-    description:
-      'Low-level read-only Claude Code challenge review. Prefer consult for ordinary agent use. Use this for auth, data loss, migrations, rollback, concurrency, hidden coupling, and scope-risk passes.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        cwd: {
+        prompt: {
           type: 'string',
           description:
-            'Workspace root to inspect. Defaults to the MCP server process working directory.',
-        },
-        base: {
-          type: 'string',
-          description: 'Base ref for branch review, for example main.',
-        },
-        scope: {
-          type: 'string',
-          enum: ['auto', 'working-tree', 'branch'],
-          description:
-            'Diff target. auto uses branch when base is set, otherwise working-tree.',
+            'Natural-language task to delegate to Claude. Required for diagnose, plan, and research unless the kind itself is enough.',
         },
         focus: {
           type: 'string',
           description:
-            'Optional risk area to challenge, such as security, rollback, or data loss.',
+            'Optional risk or topic focus, such as auth, rollback, data loss, API compatibility, or flaky tests.',
         },
         model: {
           type: 'string',
@@ -187,7 +66,8 @@ const tools = [
         },
         max_budget_usd: {
           type: 'number',
-          description: 'Optional max spend guardrail in US dollars.',
+          description:
+            'Optional max spend guardrail for the Claude Code call, in US dollars.',
         },
         timeout_ms: {
           type: 'integer',
@@ -196,120 +76,26 @@ const tools = [
         background: {
           type: 'boolean',
           description:
-            'When true, start a background job and return immediately with a job id.',
-        },
-      },
-    },
-  },
-  {
-    name: 'task',
-    description:
-      'Low-level read-only Claude Code task for diagnosis, planning, or research. Prefer consult for ordinary agent use. This sends a prompt to Claude without write tools and returns raw output plus session metadata.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        cwd: {
-          type: 'string',
-          description:
-            'Workspace root to inspect. Defaults to the MCP server process working directory.',
-        },
-        prompt: {
-          type: 'string',
-          description:
-            'The diagnosis, planning, or research question for Claude.',
+            'When true, start Claude work in the background and return a job id. Use action status and result through this same tool.',
         },
         resume_last: {
           type: 'boolean',
           description:
-            'Resume the latest completed Claude task session for this workspace.',
+            'For diagnose, plan, or research delegations, resume the latest completed Claude task session for this workspace.',
         },
         fresh: {
           type: 'boolean',
-          description: 'Force a fresh Claude session instead of resuming.',
-        },
-        model: {
-          type: 'string',
-          description: 'Optional Claude model override passed to Claude Code.',
-        },
-        effort: {
-          type: 'string',
-          enum: ['low', 'medium', 'high', 'xhigh', 'max'],
-          description: 'Optional reasoning effort hint passed to Claude Code.',
-        },
-        max_budget_usd: {
-          type: 'number',
-          description: 'Optional max spend guardrail in US dollars.',
-        },
-        timeout_ms: {
-          type: 'integer',
-          description: 'Optional timeout in milliseconds.',
-        },
-        background: {
-          type: 'boolean',
           description:
-            'When true, start a background job and return immediately with a job id.',
-        },
-      },
-    },
-  },
-  {
-    name: 'status',
-    description:
-      'List running and recent Claude Code Companion jobs for a workspace. Use after consult, review, adversarial_review, or task returns a background job id.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        cwd: {
-          type: 'string',
-          description:
-            'Workspace root whose job board should be inspected. Defaults to the MCP server process working directory.',
+            'For diagnose, plan, or research delegations, force a fresh Claude session.',
         },
         job_id: {
           type: 'string',
-          description: 'Optional specific job id to inspect.',
+          description:
+            'Background job id for action status, result, or cancel. Omit for a workspace-level status summary.',
         },
         all: {
           type: 'boolean',
-          description:
-            'When true, include older jobs instead of only active and recent jobs.',
-        },
-      },
-    },
-  },
-  {
-    name: 'result',
-    description:
-      'Return a stored Claude Code Companion job result, raw Claude JSON, parsed review data, logs, and the claude -r resume hint when available.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        cwd: {
-          type: 'string',
-          description:
-            'Workspace root whose job board should be inspected. Defaults to the MCP server process working directory.',
-        },
-        job_id: {
-          type: 'string',
-          description: 'Job id returned by a background call.',
-        },
-      },
-    },
-  },
-  {
-    name: 'cancel',
-    description:
-      'Cancel a running Claude Code Companion background job and mark it cancelled in the local job board.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        cwd: {
-          type: 'string',
-          description:
-            'Workspace root whose job board should be inspected. Defaults to the MCP server process working directory.',
-        },
-        job_id: {
-          type: 'string',
-          description: 'Job id returned by a background call.',
+          description: 'For action status, include older jobs as well.',
         },
       },
     },
@@ -318,10 +104,10 @@ const tools = [
 
 const prompts = [
   {
-    name: 'review_current_diff',
-    title: 'Claude review current diff',
+    name: 'claude_review',
+    title: 'Claude review',
     description:
-      'Ask Claude Code Companion to run a read-only second-model review of the current working tree.',
+      'Delegate a read-only second-model review of the current work to Claude Code.',
     arguments: [
       {
         name: 'max_budget_usd',
@@ -336,10 +122,10 @@ const prompts = [
     ],
   },
   {
-    name: 'adversarial_review',
+    name: 'claude_adversarial_review',
     title: 'Claude adversarial review',
     description:
-      'Ask Claude Code Companion to challenge assumptions and risk in the current diff or branch.',
+      'Delegate a skeptical risk review to Claude Code without leaving Codex.',
     arguments: [
       {
         name: 'focus',
@@ -359,10 +145,10 @@ const prompts = [
     ],
   },
   {
-    name: 'diagnose_with_claude',
+    name: 'claude_diagnose',
     title: 'Claude diagnosis',
     description:
-      'Ask Claude Code Companion for read-only root-cause analysis of a bug, failing test, or confusing behavior.',
+      'Delegate read-only root-cause analysis to Claude Code and return to Codex.',
     arguments: [
       {
         name: 'problem',
@@ -377,10 +163,10 @@ const prompts = [
     ],
   },
   {
-    name: 'plan_with_claude',
+    name: 'claude_plan',
     title: 'Claude planning pass',
     description:
-      'Ask Claude Code Companion for a read-only implementation or verification plan before Codex edits.',
+      'Delegate read-only planning to Claude Code before Codex implements.',
     arguments: [
       {
         name: 'goal',
@@ -405,75 +191,127 @@ function pushArg(args, name, value) {
   args.push(`--${name}`, String(value));
 }
 
-function commandForConsult(input = {}) {
-  if (input.mode === 'adversarial_review') return 'adversarial-review';
-  if (input.mode === 'diagnose' || input.mode === 'plan' || input.mode === 'research')
-    return 'task';
-  return 'review';
-}
-
-function consultPrompt(input = {}) {
-  const parts = [];
-  if (input.prompt) parts.push(String(input.prompt));
-  if (input.focus) parts.push(`Focus: ${input.focus}`);
-  if (!parts.length && input.mode === 'plan')
-    parts.push('Produce a concise read-only implementation and verification plan.');
-  if (!parts.length && input.mode === 'diagnose')
-    parts.push('Diagnose the likely root cause. Do not suggest edits.');
-  if (!parts.length && input.mode === 'research')
-    parts.push('Research the repository context and report useful findings. Do not edit.');
-  return parts.join('\n\n');
-}
-
-function pushTargetArgs(args, input = {}) {
-  if (input.target === 'working_tree') pushArg(args, 'scope', 'working-tree');
-  else if (input.target === 'branch') pushArg(args, 'scope', 'branch');
-}
-
-function companionArgs(name, input = {}) {
-  const command =
-    name === 'consult'
-      ? commandForConsult(input)
-      : name === 'adversarial_review'
-        ? 'adversarial-review'
-        : name;
-  const args = [COMPANION, command, '--json'];
+function pushSharedRuntimeArgs(args, input = {}) {
   pushArg(args, 'cwd', input.cwd);
-  pushArg(args, 'base', input.base);
-  pushArg(args, 'scope', input.scope);
-  if (name === 'consult') pushTargetArgs(args, input);
   pushArg(args, 'model', input.model);
   pushArg(args, 'effort', input.effort);
   pushArg(args, 'max-budget-usd', input.max_budget_usd);
   pushArg(args, 'timeout-ms', input.timeout_ms);
   pushArg(args, 'background', input.background);
+}
+
+function pushReviewTargetArgs(args, input = {}) {
+  pushArg(args, 'base', input.base);
+  if (input.target === 'working_tree') pushArg(args, 'scope', 'working-tree');
+  if (input.target === 'branch') pushArg(args, 'scope', 'branch');
+}
+
+function delegatedTaskPrompt(input = {}) {
+  const parts = [];
+  if (input.prompt) parts.push(String(input.prompt));
+  if (input.focus) parts.push(`Focus: ${input.focus}`);
+  if (!parts.length && input.kind === 'diagnose')
+    parts.push('Diagnose the likely root cause. Do not edit files.');
+  if (!parts.length && input.kind === 'plan')
+    parts.push(
+      'Produce a concise read-only implementation and verification plan.',
+    );
+  if (!parts.length && input.kind === 'research')
+    parts.push(
+      'Research the repository context and report useful findings. Do not edit files.',
+    );
+  return parts.join('\n\n');
+}
+
+function delegateArgs(input = {}) {
+  if (!input.kind) {
+    throw new Error('action delegate requires kind');
+  }
+
+  if (input.kind === 'review') {
+    const args = [COMPANION, 'review', '--json'];
+    pushSharedRuntimeArgs(args, input);
+    pushReviewTargetArgs(args, input);
+    return args;
+  }
+
+  if (input.kind === 'adversarial_review') {
+    const args = [COMPANION, 'adversarial-review', '--json'];
+    pushSharedRuntimeArgs(args, input);
+    pushReviewTargetArgs(args, input);
+    args.push(delegatedTaskPrompt(input) || 'Challenge the current change.');
+    return args;
+  }
+
+  const args = [COMPANION, 'task', '--json'];
+  pushSharedRuntimeArgs(args, input);
   pushArg(args, 'resume-last', input.resume_last);
   pushArg(args, 'fresh', input.fresh);
-  pushArg(args, 'all', input.all);
-  const jobId = input.job_id;
-  if (jobId && ['status', 'result', 'cancel'].includes(command))
-    args.push(jobId);
-  if (command === 'adversarial-review')
-    args.push(consultPrompt(input) || 'Challenge the current change.');
-  if (command === 'task') {
-    const prompt = name === 'consult' ? consultPrompt(input) : input.prompt;
-    if (prompt) args.push(prompt);
-  }
+  const prompt = delegatedTaskPrompt(input);
+  if (prompt) args.push(prompt);
   return args;
 }
 
+function companionArgs(input = {}) {
+  if (input.action === 'setup') {
+    const args = [COMPANION, 'setup', '--json'];
+    pushArg(args, 'cwd', input.cwd);
+    return args;
+  }
+
+  if (input.action === 'delegate') {
+    return delegateArgs(input);
+  }
+
+  if (['status', 'result', 'cancel'].includes(input.action)) {
+    const args = [COMPANION, input.action, '--json'];
+    pushArg(args, 'cwd', input.cwd);
+    pushArg(args, 'all', input.all);
+    if (input.job_id) args.push(input.job_id);
+    return args;
+  }
+
+  throw new Error(
+    'claude_code action must be setup, delegate, status, result, or cancel',
+  );
+}
+
 function callTool(name, input = {}) {
-  const result = spawnSync(process.execPath, companionArgs(name, input), {
-    cwd: input.cwd ? path.resolve(input.cwd) : process.cwd(),
-    env: process.env,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  const text = (result.stdout || result.stderr || '').trim();
-  return {
-    content: [{ type: 'text', text }],
-    isError: (result.status ?? 1) !== 0,
-  };
+  if (name !== 'claude_code') {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: 'Unknown tool. Use the single claude_code tool.',
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  try {
+    const result = spawnSync(process.execPath, companionArgs(input), {
+      cwd: input.cwd ? path.resolve(input.cwd) : process.cwd(),
+      env: process.env,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const text = (result.stdout || result.stderr || '').trim();
+    return {
+      content: [{ type: 'text', text }],
+      isError: (result.status ?? 1) !== 0,
+    };
+  } catch (error) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: error instanceof Error ? error.message : String(error),
+        },
+      ],
+      isError: true,
+    };
+  }
 }
 
 function respond(id, result) {
@@ -487,26 +325,27 @@ function respondError(id, message) {
 }
 
 function promptText(name, input = {}) {
-  if (name === 'review_current_diff') {
+  if (name === 'claude_review') {
     return [
-      'Use Claude Code Companion as the read-only second-model reviewer for this workspace.',
-      'Call the `consult` tool with `mode: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
+      'Stay in this Codex session and delegate a read-only second-model review to Claude Code.',
+      'Call the single `claude_code` tool with `action: "delegate"`, `kind: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
         : 'Use a small explicit max_budget_usd if the user did not provide one.',
       input.focus ? `Focus on: ${input.focus}.` : '',
-      'When the job completes, present findings first by severity and include the Claude session id or resume hint. Do not edit files until the user asks.',
+      'When the job finishes, fetch the result through `claude_code` with `action: "result"`, then present findings by severity and include the Claude session id. Do not edit files until the user asks.',
     ]
       .filter(Boolean)
       .join('\n');
   }
-  if (name === 'adversarial_review') {
+
+  if (name === 'claude_adversarial_review') {
     return [
-      'Use Claude Code Companion for a skeptical, read-only challenge review.',
-      'Call `consult` with `mode: "adversarial_review"` and `background: true` unless the target is tiny.',
+      'Stay in this Codex session and delegate a skeptical, read-only challenge review to Claude Code.',
+      'Call the single `claude_code` tool with `action: "delegate"`, `kind: "adversarial_review"`, and `background: true` unless the target is tiny.',
       input.base
-        ? `Review the branch against base ref ${input.base}.`
-        : 'Review the current working tree unless the user names a base branch.',
+        ? `Use target "branch" with base ref ${input.base}.`
+        : 'Use target "working_tree" unless the user names a base branch.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
         : 'Use a small explicit max_budget_usd if the user did not provide one.',
@@ -518,10 +357,11 @@ function promptText(name, input = {}) {
       .filter(Boolean)
       .join('\n');
   }
-  if (name === 'diagnose_with_claude') {
+
+  if (name === 'claude_diagnose') {
     return [
-      'Use Claude Code Companion for read-only root-cause diagnosis.',
-      'Call `consult` with `mode: "diagnose"` and a prompt that includes the problem statement below.',
+      'Stay in this Codex session and delegate read-only diagnosis to Claude Code.',
+      'Call the single `claude_code` tool with `action: "delegate"` and `kind: "diagnose"`.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
         : 'Use a small explicit max_budget_usd if the user did not provide one.',
@@ -529,10 +369,11 @@ function promptText(name, input = {}) {
       'Summarize Claude findings, include the session id, and verify before editing.',
     ].join('\n');
   }
-  if (name === 'plan_with_claude') {
+
+  if (name === 'claude_plan') {
     return [
-      'Use Claude Code Companion for a read-only planning pass before implementation.',
-      'Call `consult` with `mode: "plan"` and a prompt that includes the goal below.',
+      'Stay in this Codex session and delegate a read-only planning pass to Claude Code.',
+      'Call the single `claude_code` tool with `action: "delegate"` and `kind: "plan"`.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
         : 'Use a small explicit max_budget_usd if the user did not provide one.',
@@ -540,6 +381,7 @@ function promptText(name, input = {}) {
       'Use the plan as advisory input. Codex owns the final implementation and verification.',
     ].join('\n');
   }
+
   throw new Error(`Unknown prompt: ${name}`);
 }
 

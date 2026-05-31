@@ -29,8 +29,9 @@ For review jobs, the companion collects:
 - review prompt and JSON output schema
 
 For task jobs, Claude receives the prompt plus a compact repository context.
-When Codex uses the `consult` MCP tool, `mode`, `target`, `budget`, and
-background behavior are explicit tool inputs rather than hidden prompt text.
+When Codex uses the `claude_code` MCP tool, `action`, `kind`, `target`,
+`budget`, and background behavior are explicit tool inputs rather than hidden
+prompt text.
 
 ## What Is Stored Locally
 

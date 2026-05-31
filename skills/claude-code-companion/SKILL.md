@@ -8,19 +8,20 @@ description: Use Claude Code from Codex for read-only second-model review, adver
 Use this skill when Codex should ask Claude Code for model-diverse help from
 inside the current agent session while keeping v1 read-only.
 
-The primary API is the `consult` MCP tool. The shell CLI exists for debugging
-and installation checks, not for ordinary agent workflow.
+The only public API is the `claude_code` MCP tool. The shell CLI is internal
+transport for the plugin and should not be used in ordinary agent workflow.
 
 ## When to use
 
-- Call `consult` with `mode: "review"` before shipping when a second model
-  family should inspect the current local diff.
-- Call `consult` with `mode: "adversarial_review"` when the risk is about
+- Call `claude_code` with `action: "delegate"` and `kind: "review"` before
+  shipping when a second model family should inspect the current local diff.
+- Call `claude_code` with `kind: "adversarial_review"` when the risk is about
   design choices, hidden assumptions, rollback, auth, data loss, concurrency,
   or scope creep.
-- Call `consult` with `mode: "diagnose"`, `mode: "plan"`, or
-  `mode: "research"` when Codex can pass enough context in the prompt.
-- Use `status`, `result`, and `cancel` to manage background jobs.
+- Call `claude_code` with `kind: "diagnose"`, `kind: "plan"`, or
+  `kind: "research"` when Codex can pass enough context in the prompt.
+- Use the same `claude_code` tool with `action: "status"`, `action: "result"`,
+  and `action: "cancel"` to manage background jobs.
 
 ## Boundaries
 
@@ -33,16 +34,16 @@ and installation checks, not for ordinary agent workflow.
 
 ## Typical flow
 
-1. Call `setup` if Claude Code readiness is unknown.
-2. Call `consult` with the right `mode` and `background: true` for anything
-   larger than a tiny diff.
-3. Poll `status`.
-4. Fetch `result` and present findings first, ordered by severity.
+1. Call `claude_code` with `action: "setup"` if readiness is unknown.
+2. Call `claude_code` with `action: "delegate"`, the right `kind`, and
+   `background: true` for anything larger than a tiny diff.
+3. Poll with `claude_code` and `action: "status"`.
+4. Fetch with `claude_code` and `action: "result"`, then present findings
+   first, ordered by severity.
 
 ## Tool selection
 
-- Prefer `consult` for new work.
-- Use low-level `review`, `adversarial_review`, and `task` only when the user or
-  host needs that exact command shape.
+- Always use `claude_code` for Claude Code Companion work.
+- Do not call shell commands directly for normal use.
 - Use MCP prompt templates when the user explicitly invokes a workflow through a
   slash-command or command-palette surface.

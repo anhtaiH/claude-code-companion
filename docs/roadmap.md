@@ -6,9 +6,8 @@
 - Read-only diagnosis and planning tasks.
 - Local job board.
 - Claude session ID handoff.
-- MCP tools for Codex.
+- Single `claude_code` MCP tool for Codex.
 - MCP prompt templates for slash-command and command-palette style hosts.
-- Primary `consult` tool for agent-native delegation.
 - Public docs and tests.
 
 ## V1.x

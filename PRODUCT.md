@@ -14,9 +14,9 @@ permission expectations, and reads the resulting review or handoff.
 
 ## Product Purpose
 
-The product lets Codex consult Claude Code for read-only review, adversarial
-review, diagnosis, planning, and research. Success means an agent can discover
-one obvious handoff surface, invoke it safely, receive structured results, and
+The product lets Codex delegate to Claude Code for read-only review,
+adversarial review, diagnosis, planning, and research. Success means an agent
+can discover one tool, choose one action, receive structured results, and
 continue the main task with a Claude session id available for follow-up.
 
 ## Brand Personality
@@ -28,6 +28,7 @@ serious coding sessions, not a novelty wrapper around two chat tools.
 ## Anti-references
 
 - CLI-first workflows presented as the main user experience.
+- Multiple public tools that make the agent choose among wrapper commands.
 - Slash-command clones that hide an unclear tool contract.
 - Broad permission modes, write-capable defaults, or provider-policy ambiguity.
 - Long command catalogs that make the agent guess which tool owns the workflow.
@@ -38,8 +39,8 @@ serious coding sessions, not a novelty wrapper around two chat tools.
 
 - Agent first, CLI second: the primary API is the MCP surface an agent can call
   inside Codex; shell commands exist for debugging and installation.
-- One obvious handoff: the default path should be `consult`, with specialist
-  modes rather than a menu of nearly identical tools.
+- One public tool: the default path is `claude_code`, with typed actions rather
+  than a menu of wrapper tools.
 - Explicit control: budget, timeout, target, and read-only posture should be
   visible in the contract.
 - Resumable work: every useful Claude run should return a session id, job id, or

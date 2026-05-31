@@ -1,145 +1,140 @@
 # Usage
 
-## Preferred Path: Codex Agent Tool Use
+Claude Code Companion is meant to be used from inside Codex. The normal user
+experience is a single Codex chat session where Codex delegates to Claude Code
+and returns with the result.
 
-Register the MCP server once:
+## Install Once
 
 ```bash
-codex mcp add claude-code-companion -- node /path/to/claude-code-companion/scripts/mcp-server.mjs
+git clone https://github.com/anhtaih/claude-code-companion.git
+cd claude-code-companion
+npm run check
+codex mcp add claude-code-companion -- node "$PWD/scripts/mcp-server.mjs"
 ```
 
-Then start a new Codex session in any project and ask naturally:
+Start a new Codex session after registering the MCP server.
+
+## Primary API
+
+There is one MCP tool:
+
+```text
+claude_code
+```
+
+Every operation goes through it.
+
+### Setup
+
+```json
+{ "action": "setup" }
+```
+
+Use this when Codex needs to confirm Node, Claude Code, Claude auth, and local
+job state are ready.
+
+### Delegate Review
+
+```json
+{
+  "action": "delegate",
+  "kind": "review",
+  "target": "working_tree",
+  "max_budget_usd": 0.25
+}
+```
+
+### Delegate Adversarial Review
+
+```json
+{
+  "action": "delegate",
+  "kind": "adversarial_review",
+  "target": "branch",
+  "base": "main",
+  "focus": "auth, rollback, and data loss",
+  "background": true,
+  "max_budget_usd": 0.35
+}
+```
+
+### Delegate Diagnosis
+
+```json
+{
+  "action": "delegate",
+  "kind": "diagnose",
+  "prompt": "Diagnose why this test is flaky. Do not edit files.",
+  "max_budget_usd": 0.2
+}
+```
+
+### Delegate Planning
+
+```json
+{
+  "action": "delegate",
+  "kind": "plan",
+  "prompt": "Plan the smallest safe implementation and verification path.",
+  "max_budget_usd": 0.2
+}
+```
+
+### Manage Background Work
+
+```json
+{ "action": "status" }
+```
+
+```json
+{ "action": "result", "job_id": "review-..." }
+```
+
+```json
+{ "action": "cancel", "job_id": "review-..." }
+```
+
+## Natural Codex Prompts
+
+You should not have to type JSON in normal use. Ask Codex:
 
 ```text
 Use Claude Code Companion to review the current diff with max_budget_usd 0.25.
 ```
 
-The agent should call the `consult` MCP tool. That is the primary API.
-
-Typical modes:
-
-```json
-{ "mode": "review", "target": "working_tree", "max_budget_usd": 0.25 }
+```text
+Use Claude Code Companion for an adversarial review against main. Focus on auth and data loss.
 ```
 
-```json
-{
-  "mode": "adversarial_review",
-  "target": "branch",
-  "base": "main",
-  "focus": "auth, rollback, and data loss",
-  "max_budget_usd": 0.35
-}
+```text
+Ask Claude Code Companion to diagnose why this test is flaky. Stay read-only.
 ```
 
-```json
-{
-  "mode": "diagnose",
-  "prompt": "Diagnose why this test is flaky. Do not suggest edits.",
-  "max_budget_usd": 0.2
-}
-```
+Codex should call `claude_code`, wait or poll if needed, fetch the result, and
+present the Claude findings back in the same session.
 
-## Direct CLI For Debugging
-
-The companion CLI is useful when you need to debug the plugin itself because it
-avoids the MCP layer:
-
-```bash
-node scripts/claude-companion.mjs setup --cwd /path/to/repo
-```
-
-## Review Current Working Tree
-
-```bash
-node scripts/claude-companion.mjs review \
-  --cwd /path/to/repo \
-  --scope working-tree \
-  --max-budget-usd 0.25 \
-  --timeout-ms 300000
-```
-
-## Review Branch Against A Base
-
-```bash
-node scripts/claude-companion.mjs review \
-  --cwd /path/to/repo \
-  --base main \
-  --max-budget-usd 0.25
-```
-
-## Adversarial Review
-
-Use this when you want Claude to challenge assumptions and focus on risk:
-
-```bash
-node scripts/claude-companion.mjs adversarial-review \
-  --cwd /path/to/repo \
-  --scope working-tree \
-  --max-budget-usd 0.35 \
-  "Focus on security, data loss, and hidden coupling."
-```
-
-## Read-Only Diagnosis Or Planning
-
-```bash
-node scripts/claude-companion.mjs task \
-  --cwd /path/to/repo \
-  --max-budget-usd 0.20 \
-  "Diagnose why the failing test could be flaky. Do not suggest edits."
-```
-
-Resume the latest completed task for the same workspace:
-
-```bash
-node scripts/claude-companion.mjs task \
-  --cwd /path/to/repo \
-  --resume-last \
-  "Given the prior diagnosis, propose a minimal verification plan."
-```
-
-## Background Jobs
-
-Start a background review:
-
-```bash
-node scripts/claude-companion.mjs review \
-  --cwd /path/to/repo \
-  --scope working-tree \
-  --background \
-  --json
-```
-
-List jobs:
-
-```bash
-node scripts/claude-companion.mjs status --cwd /path/to/repo
-```
-
-Read a result:
-
-```bash
-node scripts/claude-companion.mjs result --cwd /path/to/repo <job-id>
-```
-
-Cancel a job:
-
-```bash
-node scripts/claude-companion.mjs cancel --cwd /path/to/repo <job-id>
-```
-
-## Codex MCP Prompts
+## Prompt Templates
 
 The MCP server also exposes prompt templates for hosts that render MCP prompts
 as slash commands, command palette entries, or prompt pickers:
 
-- `review_current_diff`
-- `adversarial_review`
-- `diagnose_with_claude`
-- `plan_with_claude`
+- `claude_review`
+- `claude_adversarial_review`
+- `claude_diagnose`
+- `claude_plan`
+
+Each template still routes through the same `claude_code` tool.
+
+## Internal Runtime
+
+The repository contains `scripts/claude-companion.mjs` because the MCP server
+needs a local transport around the Claude Code CLI. Treat it like
+implementation machinery. It is useful for maintainers debugging the plugin, but
+it is not the product API and should not be the normal workflow.
 
 ## Workplace Use
 
 Only use this on work projects if your company allows sending repository
-context to Anthropic Claude Code. The plugin can restrict tools, but it cannot
-decide whether a given repository is approved for a given provider.
+context to Anthropic Claude Code. The plugin restricts Claude tool access, but it
+cannot approve a provider for a repository.

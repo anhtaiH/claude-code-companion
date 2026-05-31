@@ -29,8 +29,11 @@ The tests use a fake `claude` binary and should not spend Claude credits.
 npm run validate
 npm test
 npm run check
-node scripts/claude-companion.mjs setup --cwd /path/to/repo
 ```
+
+For normal use, verify through Codex and the `claude_code` MCP tool. The
+`scripts/claude-companion.mjs` runtime is internal transport for maintainers who
+are debugging the MCP server itself.
 
 ## Pull Requests
 

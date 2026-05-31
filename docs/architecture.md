@@ -3,30 +3,29 @@
 ## Components
 
 ```text
-Codex
+Codex session
   |
-  | skill-guided MCP tool call or MCP prompt
+  | MCP tool: claude_code
   v
 scripts/mcp-server.mjs
   |
-  | spawns companion CLI
+  | internal transport
   v
 scripts/claude-companion.mjs
   |
-  | builds prompts, git context, state, jobs
+  | local Claude Code invocation, git context, job state
   v
 claude -p --output-format json --tools ""
 ```
 
 ## Design Choices
 
-The MCP server stays thin. It exposes the agent-native API, validates the MCP
-shape, and delegates all real work to the companion CLI. This keeps debugging
-simple because every MCP action has a direct CLI equivalent.
+The MCP server exposes one public tool: `claude_code`. That tool owns setup,
+delegation, status, result, and cancellation through an `action` field.
 
-The primary MCP tool is `consult`. It maps review, adversarial review,
-diagnosis, planning, and research modes onto the lower-level companion commands.
-The lower-level tools remain available for compatibility and job management.
+The companion CLI remains an internal transport around Claude Code. It exists so
+the MCP server has a debuggable implementation boundary, not because users
+should leave Codex to run shell commands.
 
 The companion owns:
 
@@ -45,9 +44,10 @@ The companion owns:
 The plugin ships three layers:
 
 - Skill: tells Codex when to consult Claude and how to handle advisory output.
-- MCP tool: `consult` is model-controlled and optimized for automatic agent use.
+- MCP tool: `claude_code` is model-controlled and optimized for automatic agent
+  use.
 - MCP prompts: reusable user-controlled workflows that hosts can expose as slash
-  commands or command-palette entries.
+  commands or command-palette entries. They still route through `claude_code`.
 
 ## Job State
 

@@ -80,7 +80,7 @@ export function renderTaskResult(result) {
 }
 
 export function renderQueued(payload) {
-  return `${payload.title} started as ${payload.jobId}. Check status with the status tool or \`claude-companion status ${payload.jobId}\`.\n`;
+  return `${payload.title} started as ${payload.jobId}. Check status with the claude_code tool using action "status".\n`;
 }
 
 export function renderStatus(report) {

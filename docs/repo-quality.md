@@ -38,7 +38,7 @@ not just install instructions.
 Every substantial change should preserve:
 
 - read-only default posture
-- direct CLI debuggability
-- MCP wrappers as thin adapters
+- in-session `claude_code` delegation as the public API
+- the internal runtime kept debuggable for maintainers
 - fake-Claude tests that do not spend provider credits
 - explicit budget and timeout controls

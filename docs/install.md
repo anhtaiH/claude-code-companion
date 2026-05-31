@@ -36,23 +36,18 @@ codex mcp list --json
 Start a new Codex thread after registering the MCP server so the tools are
 loaded into the session.
 
-## 4. Verify From Any Project
+## 4. Verify From Codex
 
-Replace `/path/to/project` with the repository you want Claude to inspect:
+Open a new Codex session in any project and ask:
 
-```bash
-node /path/to/claude-code-companion/scripts/claude-companion.mjs setup \
-  --cwd /path/to/project
+```text
+Use Claude Code Companion to check setup for this workspace.
 ```
 
-Cheap live smoke:
+Codex should call the `claude_code` MCP tool with:
 
-```bash
-node /path/to/claude-code-companion/scripts/claude-companion.mjs task \
-  --cwd /path/to/project \
-  --max-budget-usd 0.05 \
-  --timeout-ms 60000 \
-  "Reply exactly: OK"
+```json
+{ "action": "setup" }
 ```
 
 ## Uninstall
