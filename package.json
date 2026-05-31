@@ -1,0 +1,52 @@
+{
+  "name": "claude-code-companion",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Codex plugin and MCP companion for read-only Claude Code review, diagnosis, and planning.",
+  "license": "Apache-2.0",
+  "author": "anhtaih",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anhtaih/claude-code-companion.git"
+  },
+  "bugs": {
+    "url": "https://github.com/anhtaih/claude-code-companion/issues"
+  },
+  "homepage": "https://github.com/anhtaih/claude-code-companion#readme",
+  "keywords": [
+    "codex",
+    "codex-plugin",
+    "claude-code",
+    "mcp",
+    "code-review",
+    "multi-agent",
+    "model-diversity"
+  ],
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "bin": {
+    "claude-code-companion": "./scripts/claude-companion.mjs"
+  },
+  "files": [
+    ".codex-plugin/",
+    ".mcp.json",
+    "docs/",
+    "prompts/",
+    "schemas/",
+    "scripts/",
+    "skills/",
+    "tests/",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "npm run validate && npm test",
+    "doctor": "node scripts/claude-companion.mjs setup",
+    "test": "node --test tests/*.test.mjs",
+    "validate": "node scripts/validate-plugin.mjs"
+  }
+}
