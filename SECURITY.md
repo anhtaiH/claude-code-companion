@@ -28,7 +28,7 @@ Security-sensitive areas include:
 - secret-like output handling
 - prompt content boundaries
 
-## Current Safety Posture
+## Current Behavior
 
-V1 is read-only by default and invokes Claude with no Claude tools. See the
-security model in [README.md](README.md).
+V1 asks Claude Code for review, diagnosis, planning, and research. It does not
+ask Claude Code to edit files.

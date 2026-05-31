@@ -1,15 +1,15 @@
 ---
 name: claude-code-companion
-description: Use Claude Code from Codex for read-only second-model review, adversarial review, diagnosis, and planning.
+description: Use Claude Code from Codex as a side helper for review, adversarial review, diagnosis, and planning.
 ---
 
 # Claude Code Companion
 
-Use this skill when Codex should ask Claude Code for model-diverse help from
-inside the current agent session while keeping v1 read-only.
+Use this skill when Codex should ask Claude Code for help from inside the
+current agent session.
 
-The only public API is the `claude_code` MCP tool. The shell CLI is internal
-transport for the plugin and should not be used in ordinary agent workflow.
+Use the `claude_code` MCP tool. The shell CLI is internal transport for the
+plugin and should not be used in ordinary agent workflow.
 
 ## When to use
 
@@ -26,7 +26,6 @@ transport for the plugin and should not be used in ordinary agent workflow.
 ## Boundaries
 
 - Do not ask Claude Code to edit files in v1.
-- Do not request dangerous permission bypasses or broad shell access.
 - After presenting review findings, stop and ask the user which findings they
   want fixed before changing code.
 - Treat Claude output as advisory. Codex remains responsible for verifying any

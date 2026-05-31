@@ -79,7 +79,6 @@ try {
 
   for (const requiredFile of [
     'README.md',
-    'PRODUCT.md',
     'LICENSE',
     'CONTRIBUTING.md',
     'SECURITY.md',

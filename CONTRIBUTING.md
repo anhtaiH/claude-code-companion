@@ -5,7 +5,7 @@ Thanks for considering a contribution.
 ## Setup
 
 ```bash
-git clone https://github.com/anhtaih/claude-code-companion.git
+git clone https://github.com/anhtaiH/claude-code-companion.git
 cd claude-code-companion
 npm run check
 ```
@@ -32,8 +32,8 @@ npm run check
 ```
 
 For normal use, verify through Codex and the `claude_code` MCP tool. The
-`scripts/claude-companion.mjs` runtime is internal transport for maintainers who
-are debugging the MCP server itself.
+`plugins/claude-code-companion/scripts/claude-companion.mjs` runtime is
+internal transport for maintainers debugging the MCP server itself.
 
 ## Pull Requests
 
@@ -42,7 +42,7 @@ Before opening a PR:
 1. Run `npm run check`.
 2. Update docs when behavior or install steps change.
 3. Include the user-facing reason for the change.
-4. Call out any security-model implications.
+4. Call out any safety implications.
 
 ## Reporting Bugs
 
