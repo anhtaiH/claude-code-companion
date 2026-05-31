@@ -3,6 +3,10 @@ import { binaryAvailable, runSync } from './process.mjs';
 
 const SECRET_PATTERN =
   /(?:sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY|password\s*=|secret\s*=|token\s*=)/i;
+const READ_ONLY_TOOLS = 'Read,Glob,Grep,Bash';
+const READ_ONLY_ALLOWED_TOOLS =
+  'Read,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)';
+const WRITE_TOOLS = /\b(?:Edit|Write)\b/;
 
 export function hasSecretLikeText(value) {
   return SECRET_PATTERN.test(String(value ?? ''));
@@ -58,7 +62,17 @@ function normalizeEffort(effort) {
 }
 
 function buildClaudeArgs(options = {}) {
-  const args = ['-p', '--output-format', 'json', '--tools', ''];
+  const args = [
+    '-p',
+    '--output-format',
+    'json',
+    '--tools',
+    READ_ONLY_TOOLS,
+    '--allowedTools',
+    READ_ONLY_ALLOWED_TOOLS,
+    '--disallowedTools',
+    'Edit,Write',
+  ];
   if (options.resumeSessionId) args.push('--resume', options.resumeSessionId);
   if (options.model) args.push('--model', String(options.model));
   const effort = normalizeEffort(options.effort);
@@ -70,17 +84,29 @@ function buildClaudeArgs(options = {}) {
   return args;
 }
 
+function validateClaudeArgs(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index]);
+    if (/dangerously|bypassPermissions|acceptEdits/.test(arg)) {
+      throw new Error(
+        'Refusing to run Claude with write-capable or dangerous options.',
+      );
+    }
+
+    if (['--tools', '--allowedTools', '--allowed-tools'].includes(arg)) {
+      const value = String(args[index + 1] ?? '');
+      if (WRITE_TOOLS.test(value)) {
+        throw new Error(
+          'Refusing to run Claude with write-capable or dangerous options.',
+        );
+      }
+    }
+  }
+}
+
 export function runClaudePrint(cwd, prompt, options = {}) {
   const args = buildClaudeArgs(options);
-  if (
-    args.some((arg) =>
-      /dangerously|bypassPermissions|acceptEdits|Edit|Write/.test(String(arg)),
-    )
-  ) {
-    throw new Error(
-      'Refusing to run Claude with write-capable or dangerous options.',
-    );
-  }
+  validateClaudeArgs(args);
 
   const result = runSync('claude', args, {
     cwd,

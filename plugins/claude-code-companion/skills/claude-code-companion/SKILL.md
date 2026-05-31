@@ -1,6 +1,6 @@
 ---
 name: claude-code-companion
-description: Use Claude Code from Codex as a side helper for review, adversarial review, diagnosis, and planning.
+description: Use Claude Code from Codex as a side helper for review, diagnosis, planning, and research.
 ---
 
 # Claude Code Companion
@@ -8,41 +8,36 @@ description: Use Claude Code from Codex as a side helper for review, adversarial
 Use this skill when Codex should ask Claude Code for help from inside the
 current agent session.
 
-Use the `claude_code` MCP tool. The shell CLI is internal transport for the
-plugin and should not be used in ordinary agent workflow.
+Use the `claude_code` MCP tool. Slash commands under `/claude:*` are command
+shortcuts into the same tool. Do not call shell commands directly for normal
+workflow.
 
-## When to use
+## When To Use
 
-- Call `claude_code` with `action: "delegate"` and `kind: "review"` before
-  shipping when a second model family should inspect the current local diff.
-- Call `claude_code` with `kind: "adversarial_review"` when the risk is about
-  design choices, hidden assumptions, rollback, auth, data loss, concurrency,
-  or scope creep.
-- Call `claude_code` with `kind: "diagnose"`, `kind: "plan"`, or
-  `kind: "research"` when Codex can pass enough context in the prompt.
-- Use the same `claude_code` tool with `action: "status"`, `action: "result"`,
-  and `action: "cancel"` to manage background jobs.
+- Use `kind: "review"` before shipping when another model should inspect the
+  current diff.
+- Use `kind: "adversarial_review"` when the risk is about assumptions,
+  rollback, auth, data loss, concurrency, or scope creep.
+- Use `kind: "diagnose"`, `kind: "plan"`, or `kind: "research"` for general
+  investigation and planning.
+- Use focused kinds such as `test_gap_review`, `spec_audit`,
+  `pr_review_prep`, `release_risk`, `architecture_critique`,
+  `refactor_plan`, `log_diagnose`, `dependency_review`, and
+  `security_review` when the user asks for that specific pass.
+- Use `status`, `result`, and `cancel` actions to manage background jobs.
 
 ## Boundaries
 
-- Do not ask Claude Code to edit files in v1.
+- Do not ask Claude Code to edit files.
 - After presenting review findings, stop and ask the user which findings they
   want fixed before changing code.
 - Treat Claude output as advisory. Codex remains responsible for verifying any
   fix before claiming completion.
 
-## Typical flow
+## Typical Flow
 
 1. Call `claude_code` with `action: "setup"` if readiness is unknown.
-2. Call `claude_code` with `action: "delegate"`, the right `kind`, and
-   `background: true` for anything larger than a tiny diff.
-3. Poll with `claude_code` and `action: "status"`.
-4. Fetch with `claude_code` and `action: "result"`, then present findings
-   first, ordered by severity.
-
-## Tool selection
-
-- Always use `claude_code` for Claude Code Companion work.
-- Do not call shell commands directly for normal use.
-- Use MCP prompt templates when the user explicitly invokes a workflow through a
-  slash-command or command-palette surface.
+2. Call `claude_code` with `action: "delegate"` and the right `kind`.
+3. Use `background: true` for larger work.
+4. Poll with `action: "status"`.
+5. Fetch with `action: "result"` and present findings by severity.

@@ -84,6 +84,9 @@ if (!args.includes('-p')) {
   console.error('unexpected fake claude args: ' + args.join(' '));
   process.exit(1);
 }
+if (process.env.FAKE_CLAUDE_ARGS_FILE) {
+  fs.writeFileSync(process.env.FAKE_CLAUDE_ARGS_FILE, JSON.stringify(args));
+}
 const input = fs.readFileSync(0, 'utf8');
 if (mode === 'slow') {
   setTimeout(() => {}, 30000);

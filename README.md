@@ -3,14 +3,14 @@
 Use Claude Code from inside Codex for reviews, diagnosis, planning, and
 research.
 
-This is a side helper for the Codex agent. You stay in Codex, and Codex asks
-Claude Code when another model family would be useful.
+This is a side helper. You stay in Codex, and Codex asks Claude Code when
+another pass would help.
 
 ## What You Get
 
-- A `claude_code` helper that Codex can call.
-- Review and adversarial review for current changes.
-- Diagnosis, planning, and repository research.
+- `$claude-code-companion` skill guidance for Codex.
+- `/claude:*` commands for common workflows.
+- One `claude_code` MCP tool behind the scenes.
 - Background jobs with status, result, and cancel support.
 - A setup check for your local Claude Code install and login.
 
@@ -32,76 +32,99 @@ Start a new Codex session after installing.
 Then ask Codex:
 
 ```text
-Use Claude Code Companion to check setup.
+/claude:setup
 ```
 
-The setup check is the equivalent of `/codex:setup` in
-`openai/codex-plugin-cc`: it tells you whether the local helper is ready. If
-Claude Code is not signed in, sign in there first and run setup again.
-
+If Claude Code is not signed in, sign in there first and run setup again.
 Rerun the installer to update.
 
 ## Usage
 
-Ask Codex naturally from the project you are working in:
+Use the skill in natural language:
 
 ```text
-Use Claude Code Companion to review my current changes.
+$claude-code-companion review my current changes
 ```
+
+Or use slash commands:
 
 ```text
-Ask Claude Code Companion for an adversarial review before shipping. Focus on
-auth, rollback, and data loss.
+/claude:review --focus "API compatibility"
+/claude:adversarial-review --base main --background
+/claude:diagnose the failing checkout test
+/claude:plan the safest implementation path
+/claude:research how auth is wired in this repo
 ```
+
+For background work:
 
 ```text
-Ask Claude Code Companion to diagnose why the test suite is failing.
+/claude:status
+/claude:result <job-id>
+/claude:cancel <job-id>
 ```
+
+## Commands
+
+Core:
+
+- `/claude:setup`
+- `/claude:review`
+- `/claude:adversarial-review`
+- `/claude:diagnose`
+- `/claude:plan`
+- `/claude:research`
+
+Focused passes:
+
+- `/claude:test-gap-review`
+- `/claude:spec-audit`
+- `/claude:pr-review-prep`
+- `/claude:release-risk`
+- `/claude:architecture-critique`
+- `/claude:refactor-plan`
+- `/claude:log-diagnose`
+- `/claude:dependency-review`
+- `/claude:security-review`
+
+Job control:
+
+- `/claude:status`
+- `/claude:result`
+- `/claude:cancel`
+
+Review commands accept:
 
 ```text
-Ask Claude Code Companion to plan the safest implementation path.
+[--base <ref>] [--scope auto|working-tree|branch] [--focus <text>]
+[--background] [--model <model>] [--effort low|medium|high|xhigh|max]
+[--max-budget-usd <usd>] [--timeout-ms <ms>]
 ```
 
-For longer work, ask Codex to run it in the background:
+Task commands accept:
 
 ```text
-Use Claude Code Companion to run an adversarial review in the background.
+[--background] [--resume-last|--fresh] [--focus <text>]
+[--model <model>] [--effort low|medium|high|xhigh|max]
+[--max-budget-usd <usd>] [--timeout-ms <ms>] [prompt]
 ```
-
-Then check in from the same Codex session:
-
-```text
-Use Claude Code Companion to show status.
-```
-
-```text
-Use Claude Code Companion to get the result.
-```
-
-You should not need to run `claude` directly for normal plugin use.
 
 ## How It Works
 
-Claude Code Companion installs as a Codex plugin. The plugin gives Codex one MCP
-tool, `claude_code`, plus a skill that tells Codex when to use it.
+Claude Code Companion installs as the `claude` Codex plugin. The commands and
+skill route Codex into the same `claude_code` MCP tool.
 
 The tool uses your local Claude Code CLI and your existing Claude Code login.
-Claude's output is advisory. Codex remains the main agent and decides what to
-present, verify, or edit next.
-
-V1 asks Claude Code for review, diagnosis, planning, and research. It does not
-ask Claude Code to edit files.
+Claude can inspect the repo with read-only tools. It does not edit files.
 
 ## Manual Install
 
-The one-line installer runs these Codex commands:
+The installer runs:
 
 ```bash
 codex plugin marketplace add anhtaiH/claude-code-companion
-codex plugin add claude-code-companion@claude-code-companion
+codex plugin add claude@claude-code-companion
 ```
-
-Use this only if you want to see or run the steps yourself.
 
 ## Development
 

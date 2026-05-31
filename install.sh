@@ -2,7 +2,8 @@
 set -euo pipefail
 
 marketplace_name="${CLAUDE_CODE_COMPANION_MARKETPLACE:-claude-code-companion}"
-plugin_name="${CLAUDE_CODE_COMPANION_PLUGIN:-claude-code-companion}"
+plugin_name="${CLAUDE_CODE_COMPANION_PLUGIN:-claude}"
+legacy_plugin_name="claude-code-companion"
 source_spec="${CLAUDE_CODE_COMPANION_SOURCE:-anhtaiH/claude-code-companion}"
 
 need() {
@@ -24,10 +25,11 @@ fi
 printf 'Installing Claude Code Companion for Codex...\n'
 
 codex plugin remove "${plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
+codex plugin remove "${legacy_plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
 codex plugin marketplace remove "${marketplace_name}" >/dev/null 2>&1 || true
 
 codex plugin marketplace add "${source_spec}"
 codex plugin add "${plugin_name}@${marketplace_name}"
 
 printf '\nInstalled. Start a new Codex session, then ask:\n'
-printf '  Use Claude Code Companion to check setup.\n'
+printf '  /claude:setup\n'

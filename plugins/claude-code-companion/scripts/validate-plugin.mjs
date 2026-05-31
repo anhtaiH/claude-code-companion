@@ -18,6 +18,26 @@ const marketplacePath = path.join(
   'plugins',
   'marketplace.json',
 );
+const commandNames = [
+  'setup',
+  'review',
+  'adversarial-review',
+  'diagnose',
+  'plan',
+  'research',
+  'test-gap-review',
+  'spec-audit',
+  'pr-review-prep',
+  'release-risk',
+  'architecture-critique',
+  'refactor-plan',
+  'log-diagnose',
+  'dependency-review',
+  'security-review',
+  'status',
+  'result',
+  'cancel',
+];
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -51,13 +71,14 @@ try {
 
   assert(
     !Object.hasOwn(manifest, 'hooks'),
-    'v1 plugin must not declare Codex hooks',
+    'plugin must not declare Codex hooks',
   );
   assertPath(manifest.skills, 'skills directory');
   assertPath(manifest.mcpServers, 'MCP manifest');
+  assert(manifest.name === 'claude', 'installed plugin name should be claude');
   assert(
-    marketplace.name === manifest.name,
-    'marketplace name should match plugin name',
+    marketplace.name === 'claude-code-companion',
+    'marketplace name should remain claude-code-companion',
   );
   const marketplacePlugin = marketplace.plugins?.find(
     (plugin) => plugin.name === manifest.name,
@@ -75,6 +96,20 @@ try {
   assert(Array.isArray(server.args), 'MCP server args must be an array');
   for (const arg of server.args) {
     if (arg.endsWith('.mjs')) assertPath(arg, `MCP arg ${arg}`);
+  }
+
+  for (const commandName of commandNames) {
+    const commandPath = path.join('commands', `${commandName}.md`);
+    assertPath(commandPath, 'plugin command');
+    const text = fs.readFileSync(path.join(pluginRoot, commandPath), 'utf8');
+    assert(
+      /^---[\s\S]*\ndescription: .+\n[\s\S]*---/.test(text),
+      `command ${commandName} missing description frontmatter`,
+    );
+    assert(
+      /^---[\s\S]*\nargument-hint: .+\n[\s\S]*---/.test(text),
+      `command ${commandName} missing argument-hint frontmatter`,
+    );
   }
 
   for (const requiredFile of [

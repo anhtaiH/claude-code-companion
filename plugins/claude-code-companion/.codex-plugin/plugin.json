@@ -1,7 +1,7 @@
 {
-  "name": "claude-code-companion",
+  "name": "claude",
   "version": "0.1.0",
-  "description": "Use Claude Code from Codex for read-only review, diagnosis, and planning.",
+  "description": "Use Claude Code from Codex for review, diagnosis, planning, and research.",
   "author": {
     "name": "anhtaiH"
   },
@@ -11,8 +11,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Claude Code Companion",
-    "shortDescription": "Ask Claude Code for read-only second-model help",
-    "longDescription": "Claude Code Companion lets Codex start local Claude Code review, adversarial review, diagnosis, and planning jobs. It uses the user's local Claude Code CLI and keeps v1 read-only by default.",
+    "shortDescription": "Ask Claude Code for second-model help",
+    "longDescription": "Claude Code Companion lets Codex ask the local Claude Code CLI for review, adversarial review, diagnosis, planning, and research while Codex stays in charge.",
     "developerName": "anhtaiH",
     "category": "Developer Tools",
     "capabilities": ["Read", "Interactive"],

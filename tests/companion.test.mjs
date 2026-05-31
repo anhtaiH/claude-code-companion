@@ -13,8 +13,47 @@ import {
   installFakeClaude,
   makeTempDir,
   MCP_SERVER,
+  PLUGIN_ROOT,
   run,
 } from './helpers.mjs';
+
+const EXPECTED_KINDS = [
+  'review',
+  'adversarial_review',
+  'diagnose',
+  'plan',
+  'research',
+  'test_gap_review',
+  'spec_audit',
+  'pr_review_prep',
+  'release_risk',
+  'architecture_critique',
+  'refactor_plan',
+  'log_diagnose',
+  'dependency_review',
+  'security_review',
+];
+
+const EXPECTED_COMMANDS = {
+  setup: { action: 'setup' },
+  review: { action: 'delegate', kind: 'review' },
+  'adversarial-review': { action: 'delegate', kind: 'adversarial_review' },
+  diagnose: { action: 'delegate', kind: 'diagnose' },
+  plan: { action: 'delegate', kind: 'plan' },
+  research: { action: 'delegate', kind: 'research' },
+  'test-gap-review': { action: 'delegate', kind: 'test_gap_review' },
+  'spec-audit': { action: 'delegate', kind: 'spec_audit' },
+  'pr-review-prep': { action: 'delegate', kind: 'pr_review_prep' },
+  'release-risk': { action: 'delegate', kind: 'release_risk' },
+  'architecture-critique': { action: 'delegate', kind: 'architecture_critique' },
+  'refactor-plan': { action: 'delegate', kind: 'refactor_plan' },
+  'log-diagnose': { action: 'delegate', kind: 'log_diagnose' },
+  'dependency-review': { action: 'delegate', kind: 'dependency_review' },
+  'security-review': { action: 'delegate', kind: 'security_review' },
+  status: { action: 'status' },
+  result: { action: 'result' },
+  cancel: { action: 'cancel' },
+};
 
 function tempRepo() {
   const repo = makeTempDir();
@@ -32,6 +71,43 @@ function tempRepo() {
   );
   return repo;
 }
+
+test('plugin manifest installs as claude from the companion marketplace', () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(
+      path.join(PLUGIN_ROOT, '.codex-plugin', 'plugin.json'),
+      'utf8',
+    ),
+  );
+  const mcp = JSON.parse(
+    fs.readFileSync(path.join(PLUGIN_ROOT, '.mcp.json'), 'utf8'),
+  );
+  const marketplace = JSON.parse(
+    fs.readFileSync(
+      path.join(PLUGIN_ROOT, '..', '..', '.agents', 'plugins', 'marketplace.json'),
+      'utf8',
+    ),
+  );
+
+  assert.equal(manifest.name, 'claude');
+  assert.ok(mcp.mcpServers.claude);
+  assert.equal(marketplace.name, 'claude-code-companion');
+  assert.equal(marketplace.plugins[0].name, 'claude');
+});
+
+test('all slash commands declare hints and map to claude_code actions', () => {
+  for (const [command, expected] of Object.entries(EXPECTED_COMMANDS)) {
+    const file = path.join(PLUGIN_ROOT, 'commands', `${command}.md`);
+    const text = fs.readFileSync(file, 'utf8');
+    assert.match(text, /^---[\s\S]*\ndescription: .+\n[\s\S]*---/);
+    assert.match(text, /^---[\s\S]*\nargument-hint: .+\n[\s\S]*---/);
+    assert.match(text, /claude_code/);
+    assert.match(text, new RegExp(`action: "${expected.action}"`));
+    if (expected.kind) {
+      assert.match(text, new RegExp(`kind: "${expected.kind}"`));
+    }
+  }
+});
 
 test('setup reports ready with fake Claude installed and authenticated', () => {
   const binDir = makeTempDir();
@@ -118,6 +194,28 @@ test('review returns structured findings from fake Claude', () => {
   assert.equal(payload.sessionId, 'fake-session-1');
 });
 
+test('Claude runs with read-only repository tools', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep,Bash');
+  assert.match(args[args.indexOf('--allowedTools') + 1], /Read,Glob,Grep/);
+  assert.match(args[args.indexOf('--allowedTools') + 1], /Bash\(git diff:\*\)/);
+  assert.equal(args[args.indexOf('--disallowedTools') + 1], 'Edit,Write');
+  assert.equal(args.includes('--dangerously-skip-permissions'), false);
+});
+
 test('malformed review output becomes needs-attention', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
@@ -152,7 +250,7 @@ test('secret-like output is not persisted', () => {
   assert.match(result.stderr, /secret-like text/i);
 });
 
-test('read-only v1 rejects write flags', () => {
+test('read-only mode rejects write flags', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
@@ -292,6 +390,10 @@ test('MCP server exposes exactly one agent-native tool and prompt templates', ()
   });
   assert.equal(responses[1].result.tools.length, 1);
   assert.equal(responses[1].result.tools[0].name, 'claude_code');
+  assert.deepEqual(
+    responses[1].result.tools[0].inputSchema.properties.kind.enum,
+    EXPECTED_KINDS,
+  );
   assert.ok(
     responses[3].result.messages[0].content.text.includes('claude_code'),
   );
@@ -341,6 +443,39 @@ test('MCP claude_code delegate action routes to fake Claude review', () => {
   const toolText = responses[1].result.content[0].text;
   const payload = JSON.parse(toolText);
   assert.equal(payload.review.verdict, 'changes-needed');
+  assert.equal(payload.sessionId, 'fake-session-1');
+});
+
+test('MCP claude_code routes focused task modes to fake Claude', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'test_gap_review',
+          cwd: repo,
+          prompt: 'Find missing tests for this change.',
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(
+    JSON.parse(result.stdout).result.content[0].text,
+  );
+  assert.equal(payload.rawOutput, 'Handled task');
   assert.equal(payload.sessionId, 'fake-session-1');
 });
 

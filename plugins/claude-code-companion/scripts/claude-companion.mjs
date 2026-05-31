@@ -71,7 +71,7 @@ function printUsage() {
       '  node scripts/claude-companion.mjs setup [--cwd <path>] [--json]',
       '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--effort <level>] [--max-budget-usd <amount>] [--timeout-ms <ms>] [--json]',
       '  node scripts/claude-companion.mjs adversarial-review [same flags as review] [focus text]',
-      '  node scripts/claude-companion.mjs task [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [prompt]',
+      '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [prompt]',
       '  node scripts/claude-companion.mjs status [job-id] [--all] [--json]',
       '  node scripts/claude-companion.mjs result [job-id] [--json]',
       '  node scripts/claude-companion.mjs cancel [job-id] [--json]',
@@ -121,7 +121,7 @@ function rejectWriteOptions(options) {
   const found = disallowed.filter((key) => options[key] !== undefined);
   if (found.length) {
     throw new Error(
-      `Claude Code Companion v1 is read-only; refusing option(s): ${found.join(', ')}`,
+      `Claude Code Companion is read-only; refusing option(s): ${found.join(', ')}`,
     );
   }
 }
@@ -277,7 +277,7 @@ function buildTaskPrompt(cwd, prompt) {
   return [
     'You are Claude Code running as a read-only companion for Codex.',
     'Do not edit files, run mutating commands, or ask for permission bypasses.',
-    'Use only the context supplied in this prompt.',
+    'Use read-only repository inspection tools when they help the task.',
     '',
     '## Repository Context',
     repoContext,
@@ -498,6 +498,7 @@ async function handleTask(argv) {
       'timeout-ms',
       'cwd',
       'prompt-file',
+      'kind',
     ],
     booleanOptions: ['json', 'background', 'resume-last', 'resume', 'fresh'],
     aliasMap: { C: 'cwd', m: 'model' },
@@ -517,7 +518,9 @@ async function handleTask(argv) {
   if (!prompt && !resumeLast)
     throw new Error('Provide a prompt or use --resume-last.');
   const request = {
-    kind: resumeLast ? 'task-resume' : 'task',
+    kind: resumeLast
+      ? `${options.kind ?? 'task'}-resume`
+      : (options.kind ?? 'task'),
     jobClass: 'task',
     cwd,
     prompt,

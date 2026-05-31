@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "claude-code-companion": {
+    "claude": {
       "command": "node",
       "args": ["./scripts/mcp-server.mjs"],
       "cwd": "."

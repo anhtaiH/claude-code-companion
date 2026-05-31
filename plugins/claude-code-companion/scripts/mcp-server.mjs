@@ -8,6 +8,34 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const COMPANION = path.join(SCRIPT_DIR, 'claude-companion.mjs');
+const TASK_KIND_PROMPTS = {
+  diagnose:
+    'Diagnose the likely root cause. Use repo context and read-only inspection where helpful.',
+  plan: 'Produce a concise implementation and verification plan.',
+  research:
+    'Research the repository context and report the findings Codex should know.',
+  test_gap_review:
+    'Find missing or weak tests for the current work. Focus on observable behavior and regression risk.',
+  spec_audit:
+    'Compare implementation against the supplied spec, task, or acceptance criteria. Call out mismatches.',
+  pr_review_prep:
+    'Prepare for PR review. Identify likely reviewer questions, unclear decisions, and risky diffs.',
+  release_risk:
+    'Map release risks, likely regressions, rollback concerns, and practical smoke checks.',
+  architecture_critique:
+    'Challenge the architecture and design direction. Look for coupling, unclear boundaries, and simpler options.',
+  refactor_plan:
+    'Plan a safe refactor path with small steps, verification points, and rollback-friendly ordering.',
+  log_diagnose:
+    'Diagnose the provided logs, stack traces, CI output, or failing command output.',
+  dependency_review:
+    'Review dependency, framework, or migration changes for compatibility and integration risk.',
+  security_review:
+    'Review for auth, secrets, privacy, data exposure, unsafe defaults, and permission mistakes.',
+};
+const REVIEW_KINDS = ['review', 'adversarial_review'];
+const TASK_KINDS = Object.keys(TASK_KIND_PROMPTS);
+const ALL_KINDS = [...REVIEW_KINDS, ...TASK_KINDS];
 
 const tools = [
   {
@@ -26,9 +54,9 @@ const tools = [
         },
         kind: {
           type: 'string',
-          enum: ['review', 'adversarial_review', 'diagnose', 'plan', 'research'],
+          enum: ALL_KINDS,
           description:
-            'Required for action delegate. review inspects code, adversarial_review challenges risk and assumptions, diagnose investigates root cause, plan drafts an implementation or verification plan, and research performs read-only repository investigation.',
+            'Required for action delegate. Use review/adversarial_review for diff review, or a task kind for diagnosis, planning, research, and focused advisory passes.',
         },
         cwd: {
           type: 'string',
@@ -206,20 +234,20 @@ function pushReviewTargetArgs(args, input = {}) {
   if (input.target === 'branch') pushArg(args, 'scope', 'branch');
 }
 
-function delegatedTaskPrompt(input = {}) {
+function reviewFocusText(input = {}) {
   const parts = [];
   if (input.prompt) parts.push(String(input.prompt));
   if (input.focus) parts.push(`Focus: ${input.focus}`);
-  if (!parts.length && input.kind === 'diagnose')
-    parts.push('Diagnose the likely root cause. Do not edit files.');
-  if (!parts.length && input.kind === 'plan')
-    parts.push(
-      'Produce a concise read-only implementation and verification plan.',
-    );
-  if (!parts.length && input.kind === 'research')
-    parts.push(
-      'Research the repository context and report useful findings. Do not edit files.',
-    );
+  return parts.join('\n\n');
+}
+
+function delegatedTaskPrompt(input = {}) {
+  const parts = [];
+  if (TASK_KIND_PROMPTS[input.kind]) parts.push(TASK_KIND_PROMPTS[input.kind]);
+  if (input.prompt) parts.push(`Request: ${String(input.prompt)}`);
+  if (input.focus) parts.push(`Focus: ${input.focus}`);
+  if (!parts.length)
+    parts.push('Inspect the repository context and report useful findings.');
   return parts.join('\n\n');
 }
 
@@ -232,6 +260,8 @@ function delegateArgs(input = {}) {
     const args = [COMPANION, 'review', '--json'];
     pushSharedRuntimeArgs(args, input);
     pushReviewTargetArgs(args, input);
+    const focusText = reviewFocusText(input);
+    if (focusText) args.push(focusText);
     return args;
   }
 
@@ -245,6 +275,7 @@ function delegateArgs(input = {}) {
 
   const args = [COMPANION, 'task', '--json'];
   pushSharedRuntimeArgs(args, input);
+  pushArg(args, 'kind', input.kind);
   pushArg(args, 'resume-last', input.resume_last);
   pushArg(args, 'fresh', input.fresh);
   const prompt = delegatedTaskPrompt(input);
@@ -331,7 +362,7 @@ function promptText(name, input = {}) {
       'Call the single `claude_code` tool with `action: "delegate"`, `kind: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : 'Use a small explicit max_budget_usd if the user did not provide one.',
+        : '',
       input.focus ? `Focus on: ${input.focus}.` : '',
       'When the job finishes, fetch the result through `claude_code` with `action: "result"`, then present findings by severity and include the Claude session id. Do not edit files until the user asks.',
     ]
@@ -348,7 +379,7 @@ function promptText(name, input = {}) {
         : 'Use target "working_tree" unless the user names a base branch.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : 'Use a small explicit max_budget_usd if the user did not provide one.',
+        : '',
       input.focus
         ? `Challenge this focus area: ${input.focus}.`
         : 'Focus on hidden assumptions, rollback, data loss, auth, concurrency, and scope risk.',
@@ -364,10 +395,12 @@ function promptText(name, input = {}) {
       'Call the single `claude_code` tool with `action: "delegate"` and `kind: "diagnose"`.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : 'Use a small explicit max_budget_usd if the user did not provide one.',
+        : '',
       `Problem: ${input.problem ?? '<describe the failing behavior>'}`,
       'Summarize Claude findings, include the session id, and verify before editing.',
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   if (name === 'claude_plan') {
@@ -376,10 +409,12 @@ function promptText(name, input = {}) {
       'Call the single `claude_code` tool with `action: "delegate"` and `kind: "plan"`.',
       input.max_budget_usd
         ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : 'Use a small explicit max_budget_usd if the user did not provide one.',
+        : '',
       `Goal: ${input.goal ?? '<describe the implementation or verification goal>'}`,
       'Use the plan as advisory input. Codex owns the final implementation and verification.',
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   throw new Error(`Unknown prompt: ${name}`);
@@ -411,7 +446,7 @@ rl.on('line', (line) => {
       respond(message.id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'claude-code-companion', version: '0.1.0' },
+        serverInfo: { name: 'claude', version: '0.1.0' },
       });
     } else if (message.method === 'tools/list') {
       respond(message.id, { tools });
