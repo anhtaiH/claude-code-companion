@@ -27,9 +27,24 @@ printf 'Installing Claude Code Companion for Codex...\n'
 codex plugin remove "${plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
 codex plugin remove "${legacy_plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
 codex plugin marketplace remove "${marketplace_name}" >/dev/null 2>&1 || true
+codex mcp remove "${marketplace_name}" >/dev/null 2>&1 || true
 
 codex plugin marketplace add "${source_spec}"
-codex plugin add "${plugin_name}@${marketplace_name}"
+install_output="$(codex plugin add "${plugin_name}@${marketplace_name}")"
+printf '%s\n' "${install_output}"
+
+plugin_root="$(
+  printf '%s\n' "${install_output}" |
+    sed -n 's/^Installed plugin root: //p' |
+    tail -n 1
+)"
+
+if [[ -z "${plugin_root}" || ! -f "${plugin_root}/scripts/mcp-server.mjs" ]]; then
+  printf 'Could not locate installed plugin root for MCP registration.\n' >&2
+  exit 1
+fi
+
+codex mcp add "${marketplace_name}" -- node "${plugin_root}/scripts/mcp-server.mjs"
 
 printf '\nInstalled. Start a new Codex session, then ask:\n'
-printf '  /claude:setup\n'
+printf '  $claude setup\n'

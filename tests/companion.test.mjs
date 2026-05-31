@@ -93,9 +93,24 @@ test('plugin manifest installs as claude from the companion marketplace', () => 
   assert.ok(mcp.mcpServers.claude);
   assert.equal(marketplace.name, 'claude-code-companion');
   assert.equal(marketplace.plugins[0].name, 'claude');
+
+  const skillText = fs.readFileSync(
+    path.join(PLUGIN_ROOT, 'skills', 'claude', 'SKILL.md'),
+    'utf8',
+  );
+  assert.match(skillText, /name: claude/);
+  assert.match(skillText, /\$claude/);
+  assert.match(skillText, /companion script/);
+
+  const installer = fs.readFileSync(
+    path.join(PLUGIN_ROOT, '..', '..', 'install.sh'),
+    'utf8',
+  );
+  assert.match(installer, /codex mcp add "\$\{marketplace_name\}"/);
+  assert.match(installer, /\$claude setup/);
 });
 
-test('all slash commands declare hints and map to claude_code actions', () => {
+test('all command files declare hints and map to claude_code actions', () => {
   for (const [command, expected] of Object.entries(EXPECTED_COMMANDS)) {
     const file = path.join(PLUGIN_ROOT, 'commands', `${command}.md`);
     const text = fs.readFileSync(file, 'utf8');

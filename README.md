@@ -1,25 +1,7 @@
 # Claude Code Companion
 
-Use Claude Code from inside Codex for reviews, diagnosis, planning, and
-research.
-
-This is a side helper. You stay in Codex, and Codex asks Claude Code when
-another pass would help.
-
-## What You Get
-
-- `$claude-code-companion` skill guidance for Codex.
-- `/claude:*` commands for common workflows.
-- One `claude_code` MCP tool behind the scenes.
-- Background jobs with status, result, and cancel support.
-- A setup check for your local Claude Code install and login.
-
-## Requirements
-
-- Codex CLI with plugin and MCP support.
-- Claude Code CLI installed and signed in.
-- Node.js 18.18 or newer.
-- Git for diff-based reviews.
+Use Claude Code from inside Codex for review, diagnosis, planning, and research.
+Codex stays in charge; Claude is the side helper.
 
 ## Install
 
@@ -32,103 +14,78 @@ Start a new Codex session after installing.
 Then ask Codex:
 
 ```text
-/claude:setup
+$claude setup
 ```
 
-If Claude Code is not signed in, sign in there first and run setup again.
-Rerun the installer to update.
+If Claude Code is not signed in, run `claude auth login` and rerun the
+installer.
 
 ## Usage
 
-Use the skill in natural language:
+Use `$claude` in normal chat:
 
 ```text
-$claude-code-companion review my current changes
-```
-
-Or use slash commands:
-
-```text
-/claude:review --focus "API compatibility"
-/claude:adversarial-review --base main --background
-/claude:diagnose the failing checkout test
-/claude:plan the safest implementation path
-/claude:research how auth is wired in this repo
+$claude review my current changes
+$claude adversarial review against main, focus auth and rollback
+$claude diagnose the failing checkout test
+$claude plan the safest implementation path
+$claude research how auth is wired in this repo
 ```
 
 For background work:
 
 ```text
-/claude:status
-/claude:result <job-id>
-/claude:cancel <job-id>
+$claude status
+$claude result <job-id>
+$claude cancel <job-id>
 ```
 
-## Commands
+Useful passes:
 
-Core:
+- review
+- adversarial review
+- diagnose
+- plan
+- research
+- test gap review
+- spec audit
+- PR review prep
+- release risk
+- architecture critique
+- refactor plan
+- log diagnose
+- dependency review
+- security review
 
-- `/claude:setup`
-- `/claude:review`
-- `/claude:adversarial-review`
-- `/claude:diagnose`
-- `/claude:plan`
-- `/claude:research`
-
-Focused passes:
-
-- `/claude:test-gap-review`
-- `/claude:spec-audit`
-- `/claude:pr-review-prep`
-- `/claude:release-risk`
-- `/claude:architecture-critique`
-- `/claude:refactor-plan`
-- `/claude:log-diagnose`
-- `/claude:dependency-review`
-- `/claude:security-review`
-
-Job control:
-
-- `/claude:status`
-- `/claude:result`
-- `/claude:cancel`
-
-Review commands accept:
+You can add details in plain English, for example:
 
 ```text
-[--base <ref>] [--scope auto|working-tree|branch] [--focus <text>]
-[--background] [--model <model>] [--effort low|medium|high|xhigh|max]
-[--timeout-ms <ms>]
-```
-
-Task commands accept:
-
-```text
-[--background] [--resume-last|--fresh] [--focus <text>]
-[--model <model>] [--effort low|medium|high|xhigh|max]
-[--timeout-ms <ms>] [prompt]
+$claude test gap review this branch, focus the new billing tests, run in background
+$claude security review the auth changes against main
+$claude log diagnose this CI failure: <paste logs>
 ```
 
 ## How It Works
 
-Claude Code Companion installs as the `claude` Codex plugin. The commands and
-skill route Codex into the same `claude_code` MCP tool.
+The installer adds the `claude` Codex plugin and registers the companion MCP
+server as `claude-code-companion`. The `$claude` skill uses the MCP tool when
+Codex exposes it. If the app only loads the skill, the agent falls back to the
+bundled companion script automatically.
 
-The tool uses your local Claude Code CLI and your existing Claude Code login.
+The companion uses your local Claude Code CLI and existing Claude Code login.
 By default it asks Claude Code for `opus[1m]` with `max` effort and dynamic
 workflows. Claude can inspect the repo with read-only tools. It does not edit
 files.
+
 Usage is handled by your Claude Code plan; the companion does not set a
 per-call budget.
 
-## Manual Install
+## Requirements
 
-The installer runs:
-
-```bash
-codex plugin marketplace add anhtaiH/claude-code-companion
-codex plugin add claude@claude-code-companion
-```
+- Codex CLI with plugin and MCP support.
+- Claude Code CLI installed and signed in.
+- Node.js 18.18 or newer.
+- Git for diff-based reviews.
 
 ## Development
 

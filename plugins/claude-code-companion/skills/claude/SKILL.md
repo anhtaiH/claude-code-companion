@@ -1,22 +1,24 @@
 ---
-name: claude-code-companion
-description: Use Claude Code from Codex as a side helper for review, diagnosis, planning, and research.
+name: claude
+description: Use Claude Code from Codex as a side helper for setup, review, diagnosis, planning, and research.
 ---
 
 # Claude Code Companion
 
 Use this skill when Codex should ask Claude Code for help from inside the
-current agent session.
+current agent session. In the Codex app, users invoke this as `$claude`.
 
-Use the `claude_code` MCP tool. Slash commands under `/claude:*` are command
-shortcuts into the same tool. Do not call shell commands directly for normal
-workflow.
+Prefer the `claude_code` MCP tool when it is available. If Codex has loaded
+this skill but has not exposed the MCP tool, run the bundled companion script
+yourself. Do not ask the user to leave Codex or run `claude` directly.
 
 Default delegations use `opus[1m]`, `max` effort, and dynamic workflows. Only
 set `model` or `effort` when the user asks for a different tradeoff.
 
 ## When To Use
 
+- Use `action: "setup"` when the user asks for setup, doctor, readiness, or
+  auth checks.
 - Use `kind: "review"` before shipping when another model should inspect the
   current diff.
 - Use `kind: "adversarial_review"` when the risk is about assumptions,
@@ -44,3 +46,28 @@ set `model` or `effort` when the user asks for a different tradeoff.
 3. Use `background: true` for larger work.
 4. Poll with `action: "status"`.
 5. Fetch with `action: "result"` and present findings by severity.
+
+If `claude_code` is unavailable, resolve the companion script at
+`../../scripts/claude-companion.mjs` relative to this `SKILL.md` file and run
+the equivalent command:
+
+- Setup: `node <script> setup --cwd <workspace> --json`.
+- Review: `node <script> review --cwd <workspace> --json [focus]`.
+- Adversarial review:
+  `node <script> adversarial-review --cwd <workspace> --json [focus]`.
+- Task:
+  `node <script> task --cwd <workspace> --kind <kind> --json [prompt]`.
+- Lifecycle:
+  `node <script> status|result|cancel --cwd <workspace> --json [job-id]`.
+
+## User Phrases
+
+Map common `$claude` requests directly:
+
+- `$claude setup` -> `action: "setup"`.
+- `$claude review current changes` -> `action: "delegate"`, `kind: "review"`.
+- `$claude adversarial review` -> `kind: "adversarial_review"`.
+- `$claude diagnose ...` -> `kind: "diagnose"`.
+- `$claude plan ...` -> `kind: "plan"`.
+- `$claude status`, `$claude result`, `$claude cancel` -> matching lifecycle
+  actions.
