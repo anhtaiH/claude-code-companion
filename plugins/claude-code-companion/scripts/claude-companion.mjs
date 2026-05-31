@@ -9,6 +9,7 @@ import { parseArgs } from './lib/args.mjs';
 import {
   getClaudeAuthStatus,
   getClaudeAvailability,
+  getClaudeDefaults,
   hasSecretLikeText,
   normalizeReviewPayload,
   readJsonSchema,
@@ -146,6 +147,7 @@ function buildSetupReport(cwd) {
     auth,
     workspaceRoot,
     stateDir: resolveStateDir(workspaceRoot),
+    defaults: getClaudeDefaults(),
     nextSteps,
   };
 }
@@ -262,6 +264,8 @@ async function executeReviewRun(request) {
         totalCostUsd: claude.totalCostUsd,
         usage: claude.usage,
         modelUsage: claude.modelUsage,
+        effectiveModels: claude.effectiveModels,
+        eventCount: claude.eventCount,
         terminalReason: claude.terminalReason,
       },
     },
@@ -278,6 +282,9 @@ function buildTaskPrompt(cwd, prompt) {
     'Do not edit files, run mutating commands, or ask for permission bypasses.',
     'Use read-only repository inspection tools when they help the task.',
     'Use Claude Code dynamic workflows for substantive tasks when helpful.',
+    'Maintain an internal plan, progress ledger, and evidence ledger for this session.',
+    'Use focused subagents when they improve the result: codebase-researcher, test-gap-reviewer, security-reviewer, architecture-critic, release-risk-reviewer, and log-diagnostician.',
+    'Return one synthesized result for Codex. Do not include raw subagent transcripts.',
     '',
     '## Repository Context',
     repoContext,
@@ -309,6 +316,8 @@ async function executeTaskRun(request) {
       totalCostUsd: claude.totalCostUsd,
       usage: claude.usage,
       modelUsage: claude.modelUsage,
+      effectiveModels: claude.effectiveModels,
+      eventCount: claude.eventCount,
       terminalReason: claude.terminalReason,
     },
   };

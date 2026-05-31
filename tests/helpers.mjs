@@ -107,6 +107,29 @@ if (mode === 'nonzero') {
   console.error('simulated claude failure');
   process.exit(2);
 }
+if (mode === 'stream-json') {
+  console.log(JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'subagent progress' }]
+    },
+    subagent_type: 'codebase-researcher'
+  }));
+  console.log(JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    duration_ms: 1,
+    result: 'Handled stream result',
+    session_id: 'fake-session-stream',
+    total_cost_usd: 0.001,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    modelUsage: { fake: { inputTokens: 1, outputTokens: 1, costUSD: 0.001 } },
+    terminal_reason: 'completed'
+  }));
+  process.exit(0);
+}
 const resumeIndex = args.indexOf('--resume');
 const resumed = resumeIndex === -1 ? null : args[resumeIndex + 1];
 const sessionId = process.env.FAKE_SESSION_ID || (resumed ? 'fake-session-resumed' : 'fake-session-1');

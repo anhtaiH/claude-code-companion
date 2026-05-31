@@ -31,6 +31,9 @@ export function renderSetup(report) {
     `- auth: ${report.auth.detail}`,
     `- state: ${report.stateDir}`,
     `- workspace: ${report.workspaceRoot}`,
+    `- default model: ${report.defaults.model}`,
+    `- default effort: ${report.defaults.effort}`,
+    `- subagents: ${report.defaults.subagents.join(', ')}`,
   ];
   if (report.nextSteps.length) {
     lines.push(

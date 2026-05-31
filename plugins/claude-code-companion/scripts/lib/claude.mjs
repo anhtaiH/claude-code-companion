@@ -1,14 +1,17 @@
 import fs from 'node:fs';
+import process from 'node:process';
 import { binaryAvailable, runSync } from './process.mjs';
 
 const SECRET_PATTERN =
   /(?:sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY|password\s*=|secret\s*=|token\s*=)/i;
-const READ_ONLY_TOOLS = 'Read,Glob,Grep,Bash';
+const READ_ONLY_TOOLS = 'Read,Glob,Grep,Bash,Agent';
 const READ_ONLY_ALLOWED_TOOLS =
-  'Read,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)';
+  'Read,Glob,Grep,Agent,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)';
 const WRITE_TOOLS = /\b(?:Edit|Write)\b/;
 const DEFAULT_MODEL = 'opus[1m]';
 const DEFAULT_EFFORT = 'max';
+const AGENT_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
+const AGENT_DISALLOWED_TOOLS = ['Edit', 'Write'];
 
 export function hasSecretLikeText(value) {
   return SECRET_PATTERN.test(String(value ?? ''));
@@ -16,6 +19,18 @@ export function hasSecretLikeText(value) {
 
 export function getClaudeAvailability(cwd) {
   return binaryAvailable('claude', ['--version'], { cwd });
+}
+
+export function getClaudeDefaults() {
+  return {
+    model: DEFAULT_MODEL,
+    effort: DEFAULT_EFFORT,
+    ultracode: true,
+    subagents: Object.keys(buildCompanionAgents()),
+    tools: READ_ONLY_TOOLS,
+    allowedTools: READ_ONLY_ALLOWED_TOOLS,
+    disallowedTools: 'Edit,Write',
+  };
 }
 
 export function getClaudeAuthStatus(cwd) {
@@ -67,6 +82,61 @@ function shouldUseUltracode(options = {}) {
   return !options.effort;
 }
 
+function companionAgent(prompt, description, extra = {}) {
+  return {
+    description,
+    prompt: [
+      prompt,
+      '',
+      'You are running under Claude Code Companion for Codex.',
+      'Stay read-only. Do not edit files, write files, or run mutating commands.',
+      'Use only read-only repository inspection and git read commands.',
+      'Return concise findings with file paths and concrete evidence.',
+    ].join('\n'),
+    tools: AGENT_TOOLS,
+    disallowedTools: AGENT_DISALLOWED_TOOLS,
+    model: DEFAULT_MODEL,
+    effort: DEFAULT_EFFORT,
+    background: true,
+    ...extra,
+  };
+}
+
+function buildCompanionAgents() {
+  return {
+    'codebase-researcher': companionAgent(
+      'Map the relevant repository area before review. Find important files, local instructions, ownership boundaries, and existing test patterns.',
+      'Use for repo reconnaissance, instruction gathering, and finding relevant files before review or planning.',
+    ),
+    'test-gap-reviewer': companionAgent(
+      'Find missing tests, weak assertions, untested edge cases, and risky behavior not covered by the changed test set.',
+      'Use for test coverage and regression-risk analysis.',
+    ),
+    'security-reviewer': companionAgent(
+      'Review for auth, secrets, privacy, injection, unsafe defaults, permission mistakes, and data exposure.',
+      'Use for security, privacy, auth, and permission review.',
+    ),
+    'architecture-critic': companionAgent(
+      'Challenge the design direction. Look for unnecessary coupling, unclear boundaries, brittle abstractions, and simpler implementation paths.',
+      'Use for architecture, design, refactor, and maintainability critique.',
+    ),
+    'release-risk-reviewer': companionAgent(
+      'Assess rollout, rollback, migration, operational, dependency, and customer-facing regression risks. Recommend focused smoke checks.',
+      'Use for release risk, rollback, dependency, and operational review.',
+    ),
+    'log-diagnostician': companionAgent(
+      'Analyze logs, stack traces, and failing command output. Identify likely root cause and the smallest verification step.',
+      'Use for failures, logs, CI output, and root-cause diagnosis.',
+    ),
+  };
+}
+
+function buildClaudeSettings() {
+  return {
+    ultracode: true,
+  };
+}
+
 function buildClaudeArgs(options = {}) {
   const args = [
     '-p',
@@ -84,7 +154,9 @@ function buildClaudeArgs(options = {}) {
   const effort = normalizeEffort(options.effort || DEFAULT_EFFORT);
   if (effort) args.push('--effort', effort);
   if (shouldUseUltracode(options))
-    args.push('--settings', JSON.stringify({ ultracode: true }));
+    args.push('--settings', JSON.stringify(buildClaudeSettings()));
+  if (options.subagents !== false)
+    args.push('--agents', JSON.stringify(buildCompanionAgents()));
   if (options.jsonSchema)
     args.push('--json-schema', JSON.stringify(options.jsonSchema));
   return args;
@@ -107,6 +179,63 @@ function validateClaudeArgs(args) {
         );
       }
     }
+
+    if (arg === '--agents') {
+      const value = String(args[index + 1] ?? '');
+      let agents;
+      try {
+        agents = JSON.parse(value);
+      } catch {
+        throw new Error('Refusing to run Claude with invalid agent config.');
+      }
+      const agentValues = Object.values(agents ?? {});
+      const writeCapable = agentValues.some((agent) => {
+        const tools = [
+          ...(Array.isArray(agent?.tools) ? agent.tools : []),
+          ...(Array.isArray(agent?.allowedTools) ? agent.allowedTools : []),
+        ].join(',');
+        return WRITE_TOOLS.test(tools);
+      });
+      if (
+        writeCapable ||
+        /bypassPermissions|acceptEdits/.test(JSON.stringify(agents))
+      ) {
+        throw new Error(
+          'Refusing to run Claude with write-capable or dangerous agent config.',
+        );
+      }
+    }
+  }
+}
+
+function parseClaudeOutput(stdout) {
+  const text = stdout.trim();
+  if (!text) {
+    return { raw: null, parseError: null, eventCount: 0 };
+  }
+
+  try {
+    return { raw: JSON.parse(text), parseError: null, eventCount: 1 };
+  } catch (error) {
+    const events = [];
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        events.push(JSON.parse(line));
+      } catch {
+        return {
+          raw: null,
+          parseError: error.message,
+          eventCount: events.length,
+        };
+      }
+    }
+    const result = events.findLast((event) => event?.type === 'result') ?? null;
+    return {
+      raw: result,
+      parseError: result ? null : error.message,
+      eventCount: events.length,
+    };
   }
 }
 
@@ -118,7 +247,12 @@ export function runClaudePrint(cwd, prompt, options = {}) {
     cwd,
     input: prompt,
     timeoutMs: options.timeoutMs,
-    env: options.env,
+    env: {
+      ...process.env,
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:
+        process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ?? '80',
+      ...(options.env ?? {}),
+    },
   });
 
   if (result.error?.code === 'ETIMEDOUT') {
@@ -132,23 +266,19 @@ export function runClaudePrint(cwd, prompt, options = {}) {
     };
   }
 
-  let raw = null;
-  let parseError = null;
-  if (result.stdout.trim()) {
-    try {
-      raw = JSON.parse(result.stdout);
-    } catch (error) {
-      parseError = error.message;
-    }
-  }
+  const parsed = parseClaudeOutput(result.stdout);
+  const raw = parsed.raw;
+  const parseError = parsed.parseError;
+  const status = result.ok && raw != null ? result.status : result.status || 1;
 
   return {
     ok: result.ok && raw != null,
-    status: result.status,
+    status,
     error: result.error?.message ?? parseError,
     stdout: result.stdout,
     stderr: result.stderr,
     raw,
+    eventCount: parsed.eventCount,
     resultText:
       typeof raw?.result === 'string'
         ? raw.result
@@ -159,6 +289,10 @@ export function runClaudePrint(cwd, prompt, options = {}) {
     totalCostUsd: raw?.total_cost_usd ?? null,
     usage: raw?.usage ?? null,
     modelUsage: raw?.modelUsage ?? null,
+    effectiveModels:
+      raw?.modelUsage && typeof raw.modelUsage === 'object'
+        ? Object.keys(raw.modelUsage)
+        : [],
     terminalReason: raw?.terminal_reason ?? null,
   };
 }

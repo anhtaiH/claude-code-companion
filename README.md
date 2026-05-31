@@ -77,6 +77,10 @@ By default it asks Claude Code for `opus[1m]` with `max` effort and dynamic
 workflows. Claude can inspect the repo with read-only tools. It does not edit
 files.
 
+Under the hood, Claude also gets read-only specialist subagents for codebase
+research, test gaps, security, architecture, release risk, and log diagnosis.
+Claude manages that internal work and returns one synthesized result to Codex.
+
 Usage is handled by your Claude Code plan; the companion does not set a
 per-call budget.
 

@@ -40,8 +40,10 @@ const ALL_KINDS = [...REVIEW_KINDS, ...TASK_KINDS];
 const tools = [
   {
     name: 'claude_code',
-    description:
+    description: [
       'The single agent-native Claude Code Companion API. Use this from inside Codex to delegate read-only review, adversarial review, diagnosis, planning, or research to the local Claude Code CLI, then return the result to the Codex agent. Also use this same tool to check setup, inspect status, fetch results, or cancel a background delegation. Do not call shell commands directly for normal use.',
+      'Delegations default to Opus 4.8 1M, max effort, Ultracode dynamic workflows, and read-only Claude subagents.',
+    ].join(' '),
     inputSchema: {
       type: 'object',
       required: ['action'],

@@ -143,6 +143,9 @@ test('setup reports ready with fake Claude installed and authenticated', () => {
   assert.equal(payload.auth.loggedIn, true);
   assert.equal(payload.auth.email, undefined);
   assert.equal(payload.auth.orgId, undefined);
+  assert.equal(payload.defaults.model, 'opus[1m]');
+  assert.equal(payload.defaults.effort, 'max');
+  assert.ok(payload.defaults.subagents.includes('codebase-researcher'));
 });
 
 test('setup reports missing Claude without using real PATH', () => {
@@ -233,13 +236,39 @@ test('Claude runs with read-only repository tools', () => {
   assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), {
     ultracode: true,
   });
-  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep,Bash');
-  assert.match(args[args.indexOf('--allowedTools') + 1], /Read,Glob,Grep/);
+  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep,Bash,Agent');
+  assert.match(
+    args[args.indexOf('--allowedTools') + 1],
+    /Read,Glob,Grep,Agent/,
+  );
   assert.match(args[args.indexOf('--allowedTools') + 1], /Bash\(git diff:\*\)/);
   assert.equal(args[args.indexOf('--disallowedTools') + 1], 'Edit,Write');
   assert.equal(args.includes('--dangerously-skip-permissions'), false);
   assert.equal(args.includes('--max-budget-usd'), false);
+  const agents = JSON.parse(args[args.indexOf('--agents') + 1]);
+  assert.deepEqual(Object.keys(agents).sort(), [
+    'architecture-critic',
+    'codebase-researcher',
+    'log-diagnostician',
+    'release-risk-reviewer',
+    'security-reviewer',
+    'test-gap-reviewer',
+  ]);
+  assert.equal(agents['codebase-researcher'].model, 'opus[1m]');
+  assert.equal(agents['codebase-researcher'].effort, 'max');
+  assert.equal(agents['codebase-researcher'].background, true);
+  assert.deepEqual(agents['codebase-researcher'].tools, [
+    'Read',
+    'Glob',
+    'Grep',
+    'Bash',
+  ]);
+  assert.deepEqual(agents['codebase-researcher'].disallowedTools, [
+    'Edit',
+    'Write',
+  ]);
   assert.match(fs.readFileSync(stdinFile, 'utf8'), /dynamic workflows/);
+  assert.match(fs.readFileSync(stdinFile, 'utf8'), /subagents/);
 });
 
 test('explicit model and effort override the default Opus Ultracode mode', () => {
@@ -270,6 +299,7 @@ test('explicit model and effort override the default Opus Ultracode mode', () =>
   assert.equal(args[args.indexOf('--model') + 1], 'sonnet');
   assert.equal(args[args.indexOf('--effort') + 1], 'xhigh');
   assert.equal(args.includes('--settings'), false);
+  assert.equal(args.includes('--agents'), true);
 });
 
 test('malformed review output becomes needs-attention', () => {
@@ -288,6 +318,25 @@ test('malformed review output becomes needs-attention', () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.review.verdict, 'needs-attention');
   assert.match(payload.review.summary, /could not be parsed/i);
+});
+
+test('streamed subagent events parse the final Claude result', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'stream-json' });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--json', 'inspect with subagents'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.rawOutput, 'Handled stream result');
+  assert.equal(payload.sessionId, 'fake-session-stream');
+  assert.equal(payload.claude.eventCount, 2);
 });
 
 test('secret-like output is not persisted', () => {

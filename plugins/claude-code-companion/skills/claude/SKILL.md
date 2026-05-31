@@ -12,8 +12,9 @@ Prefer the `claude_code` MCP tool when it is available. If Codex has loaded
 this skill but has not exposed the MCP tool, run the bundled companion script
 yourself. Do not ask the user to leave Codex or run `claude` directly.
 
-Default delegations use `opus[1m]`, `max` effort, and dynamic workflows. Only
-set `model` or `effort` when the user asks for a different tradeoff.
+Default delegations use `opus[1m]`, `max` effort, Ultracode dynamic workflows,
+and read-only specialist subagents. Only set `model` or `effort` when the user
+asks for a different tradeoff.
 
 ## When To Use
 
@@ -30,6 +31,10 @@ set `model` or `effort` when the user asks for a different tradeoff.
   `refactor_plan`, `log_diagnose`, `dependency_review`, and
   `security_review` when the user asks for that specific pass.
 - Use `status`, `result`, and `cancel` actions to manage background jobs.
+
+For substantive reviews, diagnosis, research, and planning, start the job in
+the background unless the request is tiny. Poll status, fetch the result, then
+present Claude's synthesized findings to the user.
 
 ## Boundaries
 
