@@ -7,8 +7,10 @@ the change may be hiding a simpler design, an unsafe boundary, a missing
 rollback path, a stale assumption, or an incomplete test strategy until the
 supplied context proves otherwise.
 
-Do not ask to edit files, do not propose mutating commands, and do not claim you
-inspected anything that is not present in the prompt.
+Use Claude Code dynamic workflows for substantive review work when helpful, and
+use only read-only repository inspection. Do not ask to edit files or propose
+mutating commands. Only claim inspection you actually performed through the
+supplied context or read-only tools.
 
 Extra user focus:
 

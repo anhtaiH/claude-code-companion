@@ -199,7 +199,11 @@ test('Claude runs with read-only repository tools', () => {
   installFakeClaude(binDir);
   const repo = tempRepo();
   const argsFile = path.join(makeTempDir(), 'claude-args.json');
-  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, {
+    FAKE_CLAUDE_ARGS_FILE: argsFile,
+    FAKE_CLAUDE_STDIN_FILE: stdinFile,
+  });
 
   const result = run(
     process.execPath,
@@ -209,11 +213,48 @@ test('Claude runs with read-only repository tools', () => {
 
   assert.equal(result.status, 0, result.stderr);
   const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--model') + 1], 'opus[1m]');
+  assert.equal(args[args.indexOf('--effort') + 1], 'max');
+  assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), {
+    ultracode: true,
+  });
   assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep,Bash');
   assert.match(args[args.indexOf('--allowedTools') + 1], /Read,Glob,Grep/);
   assert.match(args[args.indexOf('--allowedTools') + 1], /Bash\(git diff:\*\)/);
   assert.equal(args[args.indexOf('--disallowedTools') + 1], 'Edit,Write');
   assert.equal(args.includes('--dangerously-skip-permissions'), false);
+  assert.equal(args.includes('--max-budget-usd'), false);
+  assert.match(fs.readFileSync(stdinFile, 'utf8'), /dynamic workflows/);
+});
+
+test('explicit model and effort override the default Opus Ultracode mode', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'review',
+      '--cwd',
+      repo,
+      '--model',
+      'sonnet',
+      '--effort',
+      'xhigh',
+      '--json',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--model') + 1], 'sonnet');
+  assert.equal(args[args.indexOf('--effort') + 1], 'xhigh');
+  assert.equal(args.includes('--settings'), false);
 });
 
 test('malformed review output becomes needs-attention', () => {
@@ -370,7 +411,7 @@ test('MCP server exposes exactly one agent-native tool and prompt templates', ()
       method: 'prompts/get',
       params: {
         name: 'claude_review',
-        arguments: { max_budget_usd: '0.25', focus: 'API compatibility' },
+        arguments: { focus: 'API compatibility' },
       },
     },
   ]
@@ -390,12 +431,23 @@ test('MCP server exposes exactly one agent-native tool and prompt templates', ()
   });
   assert.equal(responses[1].result.tools.length, 1);
   assert.equal(responses[1].result.tools[0].name, 'claude_code');
+  assert.equal(
+    Object.hasOwn(
+      responses[1].result.tools[0].inputSchema.properties,
+      'max_budget_usd',
+    ),
+    false,
+  );
   assert.deepEqual(
     responses[1].result.tools[0].inputSchema.properties.kind.enum,
     EXPECTED_KINDS,
   );
   assert.ok(
     responses[3].result.messages[0].content.text.includes('claude_code'),
+  );
+  assert.equal(
+    responses[3].result.messages[0].content.text.includes('max_budget_usd'),
+    false,
   );
 });
 
@@ -426,7 +478,6 @@ test('MCP claude_code delegate action routes to fake Claude review', () => {
           kind: 'review',
           cwd: repo,
           target: 'working_tree',
-          max_budget_usd: 0.01,
         },
       },
     },

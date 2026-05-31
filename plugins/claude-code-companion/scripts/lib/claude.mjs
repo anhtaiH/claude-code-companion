@@ -7,6 +7,8 @@ const READ_ONLY_TOOLS = 'Read,Glob,Grep,Bash';
 const READ_ONLY_ALLOWED_TOOLS =
   'Read,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)';
 const WRITE_TOOLS = /\b(?:Edit|Write)\b/;
+const DEFAULT_MODEL = 'opus[1m]';
+const DEFAULT_EFFORT = 'max';
 
 export function hasSecretLikeText(value) {
   return SECRET_PATTERN.test(String(value ?? ''));
@@ -61,6 +63,10 @@ function normalizeEffort(effort) {
   return value;
 }
 
+function shouldUseUltracode(options = {}) {
+  return !options.effort;
+}
+
 function buildClaudeArgs(options = {}) {
   const args = [
     '-p',
@@ -74,11 +80,11 @@ function buildClaudeArgs(options = {}) {
     'Edit,Write',
   ];
   if (options.resumeSessionId) args.push('--resume', options.resumeSessionId);
-  if (options.model) args.push('--model', String(options.model));
-  const effort = normalizeEffort(options.effort);
+  args.push('--model', String(options.model || DEFAULT_MODEL));
+  const effort = normalizeEffort(options.effort || DEFAULT_EFFORT);
   if (effort) args.push('--effort', effort);
-  if (options.maxBudgetUsd)
-    args.push('--max-budget-usd', String(options.maxBudgetUsd));
+  if (shouldUseUltracode(options))
+    args.push('--settings', JSON.stringify({ ultracode: true }));
   if (options.jsonSchema)
     args.push('--json-schema', JSON.stringify(options.jsonSchema));
   return args;

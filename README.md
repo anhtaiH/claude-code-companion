@@ -98,7 +98,7 @@ Review commands accept:
 ```text
 [--base <ref>] [--scope auto|working-tree|branch] [--focus <text>]
 [--background] [--model <model>] [--effort low|medium|high|xhigh|max]
-[--max-budget-usd <usd>] [--timeout-ms <ms>]
+[--timeout-ms <ms>]
 ```
 
 Task commands accept:
@@ -106,7 +106,7 @@ Task commands accept:
 ```text
 [--background] [--resume-last|--fresh] [--focus <text>]
 [--model <model>] [--effort low|medium|high|xhigh|max]
-[--max-budget-usd <usd>] [--timeout-ms <ms>] [prompt]
+[--timeout-ms <ms>] [prompt]
 ```
 
 ## How It Works
@@ -115,7 +115,11 @@ Claude Code Companion installs as the `claude` Codex plugin. The commands and
 skill route Codex into the same `claude_code` MCP tool.
 
 The tool uses your local Claude Code CLI and your existing Claude Code login.
-Claude can inspect the repo with read-only tools. It does not edit files.
+By default it asks Claude Code for `opus[1m]` with `max` effort and dynamic
+workflows. Claude can inspect the repo with read-only tools. It does not edit
+files.
+Usage is handled by your Claude Code plan; the companion does not set a
+per-call budget.
 
 ## Manual Install
 

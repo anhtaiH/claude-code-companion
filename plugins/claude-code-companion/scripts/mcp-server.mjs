@@ -85,17 +85,14 @@ const tools = [
         },
         model: {
           type: 'string',
-          description: 'Optional Claude model override passed to Claude Code.',
+          description:
+            'Optional Claude model override passed to Claude Code. Defaults to opus[1m].',
         },
         effort: {
           type: 'string',
           enum: ['low', 'medium', 'high', 'xhigh', 'max'],
-          description: 'Optional reasoning effort hint passed to Claude Code.',
-        },
-        max_budget_usd: {
-          type: 'number',
           description:
-            'Optional max spend guardrail for the Claude Code call, in US dollars.',
+            'Optional reasoning effort override passed to Claude Code. Defaults to max.',
         },
         timeout_ms: {
           type: 'integer',
@@ -138,11 +135,6 @@ const prompts = [
       'Delegate a read-only second-model review of the current work to Claude Code.',
     arguments: [
       {
-        name: 'max_budget_usd',
-        description: 'Optional budget guardrail, for example 0.25.',
-        required: false,
-      },
-      {
         name: 'focus',
         description: 'Optional review focus, such as API compatibility.',
         required: false,
@@ -165,11 +157,6 @@ const prompts = [
         description: 'Optional base ref for branch review, for example main.',
         required: false,
       },
-      {
-        name: 'max_budget_usd',
-        description: 'Optional budget guardrail, for example 0.35.',
-        required: false,
-      },
     ],
   },
   {
@@ -183,11 +170,6 @@ const prompts = [
         description: 'The bug, symptom, or failing command to diagnose.',
         required: true,
       },
-      {
-        name: 'max_budget_usd',
-        description: 'Optional budget guardrail, for example 0.20.',
-        required: false,
-      },
     ],
   },
   {
@@ -200,11 +182,6 @@ const prompts = [
         name: 'goal',
         description: 'The implementation, migration, or verification goal.',
         required: true,
-      },
-      {
-        name: 'max_budget_usd',
-        description: 'Optional budget guardrail, for example 0.20.',
-        required: false,
       },
     ],
   },
@@ -223,7 +200,6 @@ function pushSharedRuntimeArgs(args, input = {}) {
   pushArg(args, 'cwd', input.cwd);
   pushArg(args, 'model', input.model);
   pushArg(args, 'effort', input.effort);
-  pushArg(args, 'max-budget-usd', input.max_budget_usd);
   pushArg(args, 'timeout-ms', input.timeout_ms);
   pushArg(args, 'background', input.background);
 }
@@ -360,9 +336,6 @@ function promptText(name, input = {}) {
     return [
       'Stay in this Codex session and delegate a read-only second-model review to Claude Code.',
       'Call the single `claude_code` tool with `action: "delegate"`, `kind: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
-      input.max_budget_usd
-        ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : '',
       input.focus ? `Focus on: ${input.focus}.` : '',
       'When the job finishes, fetch the result through `claude_code` with `action: "result"`, then present findings by severity and include the Claude session id. Do not edit files until the user asks.',
     ]
@@ -377,9 +350,6 @@ function promptText(name, input = {}) {
       input.base
         ? `Use target "branch" with base ref ${input.base}.`
         : 'Use target "working_tree" unless the user names a base branch.',
-      input.max_budget_usd
-        ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : '',
       input.focus
         ? `Challenge this focus area: ${input.focus}.`
         : 'Focus on hidden assumptions, rollback, data loss, auth, concurrency, and scope risk.',
@@ -393,9 +363,6 @@ function promptText(name, input = {}) {
     return [
       'Stay in this Codex session and delegate read-only diagnosis to Claude Code.',
       'Call the single `claude_code` tool with `action: "delegate"` and `kind: "diagnose"`.',
-      input.max_budget_usd
-        ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : '',
       `Problem: ${input.problem ?? '<describe the failing behavior>'}`,
       'Summarize Claude findings, include the session id, and verify before editing.',
     ]
@@ -407,9 +374,6 @@ function promptText(name, input = {}) {
     return [
       'Stay in this Codex session and delegate a read-only planning pass to Claude Code.',
       'Call the single `claude_code` tool with `action: "delegate"` and `kind: "plan"`.',
-      input.max_budget_usd
-        ? `Use max_budget_usd ${input.max_budget_usd}.`
-        : '',
       `Goal: ${input.goal ?? '<describe the implementation or verification goal>'}`,
       'Use the plan as advisory input. Codex owns the final implementation and verification.',
     ]

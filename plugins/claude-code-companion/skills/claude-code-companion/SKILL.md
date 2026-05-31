@@ -12,6 +12,9 @@ Use the `claude_code` MCP tool. Slash commands under `/claude:*` are command
 shortcuts into the same tool. Do not call shell commands directly for normal
 workflow.
 
+Default delegations use `opus[1m]`, `max` effort, and dynamic workflows. Only
+set `model` or `effort` when the user asks for a different tradeoff.
+
 ## When To Use
 
 - Use `kind: "review"` before shipping when another model should inspect the

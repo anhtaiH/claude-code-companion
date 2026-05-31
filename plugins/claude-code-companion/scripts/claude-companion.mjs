@@ -69,7 +69,7 @@ function printUsage() {
     [
       'Usage:',
       '  node scripts/claude-companion.mjs setup [--cwd <path>] [--json]',
-      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--effort <level>] [--max-budget-usd <amount>] [--timeout-ms <ms>] [--json]',
+      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--json]',
       '  node scripts/claude-companion.mjs adversarial-review [same flags as review] [focus text]',
       '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [prompt]',
       '  node scripts/claude-companion.mjs status [job-id] [--all] [--json]',
@@ -223,7 +223,6 @@ async function executeReviewRun(request) {
   const claude = runClaudePrint(context.repoRoot, prompt, {
     model: request.model,
     effort: request.effort,
-    maxBudgetUsd: request.maxBudgetUsd,
     timeoutMs: request.timeoutMs,
     jsonSchema: schema,
   });
@@ -278,6 +277,7 @@ function buildTaskPrompt(cwd, prompt) {
     'You are Claude Code running as a read-only companion for Codex.',
     'Do not edit files, run mutating commands, or ask for permission bypasses.',
     'Use read-only repository inspection tools when they help the task.',
+    'Use Claude Code dynamic workflows for substantive tasks when helpful.',
     '',
     '## Repository Context',
     repoContext,
@@ -296,7 +296,6 @@ async function executeTaskRun(request) {
   const claude = runClaudePrint(workspaceRoot, prompt, {
     model: request.model,
     effort: request.effort,
-    maxBudgetUsd: request.maxBudgetUsd,
     timeoutMs: request.timeoutMs,
     resumeSessionId: request.resumeSessionId,
   });
@@ -429,7 +428,6 @@ function parseCommonOptions(argv, extra = {}) {
       'scope',
       'model',
       'effort',
-      'max-budget-usd',
       'timeout-ms',
       'cwd',
       'job-id',
@@ -469,7 +467,6 @@ async function handleReview(argv, reviewName) {
     scope: options.scope ?? 'auto',
     model: options.model ?? null,
     effort: options.effort ?? null,
-    maxBudgetUsd: options['max-budget-usd'] ?? null,
     timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
     focusText,
     summary: `${reviewName} ${options.base ? `against ${options.base}` : (options.scope ?? 'working tree')}`,
@@ -494,7 +491,6 @@ async function handleTask(argv) {
     valueOptions: [
       'model',
       'effort',
-      'max-budget-usd',
       'timeout-ms',
       'cwd',
       'prompt-file',
@@ -527,7 +523,6 @@ async function handleTask(argv) {
     resumeSessionId: latest?.sessionId ?? null,
     model: options.model ?? null,
     effort: options.effort ?? null,
-    maxBudgetUsd: options['max-budget-usd'] ?? null,
     timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
     summary:
       prompt.split(/\s+/).slice(0, 14).join(' ') || DEFAULT_CONTINUE_PROMPT,
