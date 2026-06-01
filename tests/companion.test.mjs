@@ -364,6 +364,7 @@ test('repo-scoped review is labeled as repository review', () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.targetLabel, 'repository review');
   assert.match(payload.context.shortstat, /Repository review requested/);
+  assert.match(payload.rawOutput, /Fake review found one issue/);
   assert.match(fs.readFileSync(stdinFile, 'utf8'), /repository review/);
   assert.doesNotMatch(fs.readFileSync(stdinFile, 'utf8'), /working tree changes/);
 });
@@ -468,6 +469,34 @@ None.
   assert.equal(normalized.parsed.findings[0].line_start, 9);
 });
 
+test('review parser stops markdown severity sections at non-severity headings', () => {
+  const normalized = normalizeReviewPayload(`
+**Findings**
+
+Critical: none confirmed by Claude.
+
+High:
+- Persisted state is not migrated. Evidence: src/store/useStore.ts:413.
+  Risk: stale localStorage can reach engine paths.
+
+**Companion Notes**
+
+- Setup worked: ready true.
+- Status showed model and effort.
+
+**Companion Observations**: rawOutput was preserved.
+`);
+
+  assert.equal(normalized.parseError, null);
+  assert.equal(normalized.parsed.verdict, 'changes-needed');
+  assert.equal(normalized.parsed.findings.length, 1);
+  assert.equal(normalized.parsed.findings[0].severity, 'high');
+  assert.equal(normalized.parsed.findings[0].file, 'src/store/useStore.ts');
+  assert.equal(normalized.parsed.findings[0].line_start, 413);
+  assert.match(normalized.parsed.findings[0].body, /Risk: stale localStorage/);
+  assert.doesNotMatch(normalized.parsed.findings[0].body, /Setup worked/);
+});
+
 test('OpenAI key heuristic avoids English slug false positives', () => {
   assert.equal(
     hasSecretLikeText('hooks/pre-task-confidentiality-check.md'),
@@ -477,6 +506,19 @@ test('OpenAI key heuristic avoids English slug false positives', () => {
     redactSecretLikeText('hooks/pre-task-confidentiality-check.md'),
     'hooks/pre-task-confidentiality-check.md',
   );
+  assert.equal(
+    redactSecretLikeText('Claude mentioned a grep pattern for BEGIN PRIVATE KEY.'),
+    'Claude mentioned a grep pattern for BEGIN PRIVATE KEY.',
+  );
+  assert.equal(
+    hasSecretLikeText('Claude mentioned a grep pattern for BEGIN PRIVATE KEY.'),
+    false,
+  );
+  assert.equal(
+    redactSecretLikeText('-----BEGIN PRIVATE KEY-----'),
+    '[REDACTED:private-key]',
+  );
+  assert.equal(hasSecretLikeText('-----BEGIN PRIVATE KEY-----'), true);
   assert.equal(hasSecretLikeText(FAKE_OPENAI_KEY), true);
 });
 

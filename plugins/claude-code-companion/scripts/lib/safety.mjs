@@ -9,7 +9,8 @@ const SENSITIVE_PATTERNS = [
   },
   {
     category: 'private-key',
-    pattern: /BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY/g,
+    pattern:
+      /-----BEGIN (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----/g,
   },
   {
     category: 'password-assignment',

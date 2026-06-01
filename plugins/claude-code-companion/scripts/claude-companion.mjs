@@ -320,7 +320,7 @@ async function executeReviewRun(request) {
       sessionId: claude.sessionId,
       review,
       parseError: parsed.parseError,
-      rawOutput: parsed.parseError ? parsed.rawOutput : undefined,
+      rawOutput: parsed.rawOutput,
       warnings: warningForSensitiveOverride(sensitiveContext),
       context: {
         repoRoot: context.repoRoot,

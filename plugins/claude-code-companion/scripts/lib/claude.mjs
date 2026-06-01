@@ -523,30 +523,102 @@ function normalizeMarkdownReview(text) {
 }
 
 function sectionBySeverity(text) {
+  const sectionLines = new Map();
+  let currentSeverity = null;
+
+  for (const line of String(text).split(/\r?\n/)) {
+    const heading = parseReviewHeading(line);
+    if (heading) {
+      currentSeverity = heading.severity;
+      if (currentSeverity && heading.remainder) {
+        appendSectionLine(sectionLines, currentSeverity, heading.remainder);
+      }
+      continue;
+    }
+
+    if (currentSeverity) {
+      appendSectionLine(sectionLines, currentSeverity, line);
+    }
+  }
+
   const sections = new Map();
-  const matches = [
-    ...String(text).matchAll(
-      /^#{0,3}\s*\*{0,2}(Critical|High|Medium|Low)\*{0,2}\b.*$/gim,
-    ),
-  ];
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index];
-    const severity = match[1].toLowerCase();
-    const start = match.index + match[0].length;
-    const end = matches[index + 1]?.index ?? text.length;
-    sections.set(severity, text.slice(start, end).trim());
+  for (const [severity, lines] of sectionLines) {
+    const body = lines.join('\n').trim();
+    if (body) sections.set(severity, body);
   }
   return sections;
 }
 
+function appendSectionLine(sections, severity, line) {
+  if (!sections.has(severity)) sections.set(severity, []);
+  sections.get(severity).push(line);
+}
+
+function parseReviewHeading(line) {
+  const trimmed = String(line ?? '').trim();
+  if (!trimmed || /^[-*]\s+/.test(trimmed) || /^\d+[.)]\s+/.test(trimmed)) {
+    return null;
+  }
+
+  const withoutHashes = trimmed.replace(/^#{1,6}\s+/, '');
+  const bold = withoutHashes.match(/^\*\*([^*]+)\*\*\s*:?\s*(.*)$/);
+  const candidate = bold
+    ? `${bold[1].trim()}${bold[2] ? `: ${bold[2].trim()}` : ''}`
+    : withoutHashes;
+  const severity = candidate.match(
+    /^(Critical|High|Medium|Low)(?:\s*\/\s*info)?(?:\s+(?:findings?|issues?))?(?::\s*(.*)|\s*$)/i,
+  );
+  if (severity) {
+    return {
+      severity: severity[1].toLowerCase(),
+      remainder: severity[2]?.trim() ?? '',
+    };
+  }
+
+  if (
+    /^#{1,6}\s+/.test(trimmed) ||
+    (bold && isNonSeverityReviewHeading(bold[1])) ||
+    /^\*\*[^*]{1,80}\*\*\s*:?\s*$/.test(trimmed) ||
+    isNonSeverityReviewHeading(withoutHashes)
+  ) {
+    return { severity: null, remainder: '' };
+  }
+
+  return null;
+}
+
+function isNonSeverityReviewHeading(value) {
+  return /^(?:Repo Findings|Findings|Companion Observations|Companion Notes|Claude Review|Run metadata|Operational note)\b/i.test(
+    String(value ?? '').trim(),
+  );
+}
+
 function findingChunks(section) {
-  const lines = String(section)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const bulletLines = lines.filter((line) => /^[-*]\s+/.test(line));
-  if (!bulletLines.length) return [section.trim()].filter(Boolean);
-  return bulletLines.map((line) => line.replace(/^[-*]\s+/, '').trim());
+  const lines = String(section).split(/\r?\n/);
+  const chunks = [];
+  const proseLines = [];
+  let current = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const bullet = trimmed.match(/^[-*]\s+(.*)$/);
+    if (bullet) {
+      if (current) chunks.push(current.join('\n').trim());
+      current = [bullet[1].trim()];
+      continue;
+    }
+
+    if (current) {
+      current.push(trimmed);
+    } else {
+      proseLines.push(trimmed);
+    }
+  }
+
+  if (current) chunks.push(current.join('\n').trim());
+  if (chunks.length) return chunks.filter(Boolean);
+  return [proseLines.join('\n').trim()].filter(Boolean);
 }
 
 function coerceFindingObject(value) {
