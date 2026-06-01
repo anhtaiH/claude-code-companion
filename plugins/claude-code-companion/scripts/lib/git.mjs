@@ -43,6 +43,15 @@ export function resolveReviewTarget(cwd, options = {}) {
   }
 
   const scope = options.scope ?? 'auto';
+  if (scope === 'repo' || scope === 'repository') {
+    return {
+      mode: 'repo',
+      label: 'repository review',
+      diffArgs: null,
+      shortstatArgs: null,
+    };
+  }
+
   if (scope === 'branch') {
     const baseRef = 'main';
     return {
@@ -56,7 +65,7 @@ export function resolveReviewTarget(cwd, options = {}) {
 
   if (!['auto', 'working-tree'].includes(scope)) {
     throw new Error(
-      'Unsupported review scope. Use auto, working-tree, or pass --base <ref>.',
+      'Unsupported review scope. Use auto, working-tree, repo, or pass --base <ref>.',
     );
   }
 
@@ -134,10 +143,13 @@ export function collectReviewContext(cwd, target) {
   const branch =
     runGit(repoRoot, ['branch', '--show-current']).stdout.trim() ||
     '(detached)';
-  const diffResult = runGit(repoRoot, target.diffArgs);
+  const diffResult = target.diffArgs
+    ? runGit(repoRoot, target.diffArgs)
+    : { ok: true, stdout: '', stderr: '' };
   const rawDiff = diffResult.stdout || '';
-  const shortstat =
-    runGit(repoRoot, target.shortstatArgs).stdout.trim() || 'No tracked diff.';
+  const shortstat = target.shortstatArgs
+    ? runGit(repoRoot, target.shortstatArgs).stdout.trim() || 'No tracked diff.'
+    : 'Repository review requested; no diff target.';
   const status =
     runGit(repoRoot, [
       'status',
@@ -147,7 +159,14 @@ export function collectReviewContext(cwd, target) {
   const untracked =
     target.mode === 'working-tree'
       ? collectUntracked(repoRoot)
-      : { names: [], entries: [], rendered: 'Not included for branch review.' };
+      : {
+          names: [],
+          entries: [],
+          rendered:
+            target.mode === 'repo'
+              ? 'Not included for repository review.'
+              : 'Not included for branch review.',
+        };
 
   return {
     repoRoot,

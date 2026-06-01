@@ -1,7 +1,7 @@
 const SENSITIVE_PATTERNS = [
   {
     category: 'openai-api-key',
-    pattern: /sk-[A-Za-z0-9_-]{16,}/g,
+    pattern: /sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{32,}/g,
   },
   {
     category: 'aws-access-key',

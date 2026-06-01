@@ -14,6 +14,10 @@ import {
 } from '../plugins/claude-code-companion/scripts/lib/state.mjs';
 import { normalizeReviewPayload } from '../plugins/claude-code-companion/scripts/lib/claude.mjs';
 import {
+  hasSecretLikeText,
+  redactSecretLikeText,
+} from '../plugins/claude-code-companion/scripts/lib/safety.mjs';
+import {
   buildEnv,
   COMPANION,
   initGitRepo,
@@ -61,7 +65,7 @@ const EXPECTED_COMMANDS = {
   result: { action: 'result' },
   cancel: { action: 'cancel' },
 };
-const FAKE_OPENAI_KEY = 'sk-' + 'abcdefghijklmnopqrstuvwxyz';
+const FAKE_OPENAI_KEY = 'sk-' + 'A'.repeat(40);
 const FAKE_PASSWORD_ASSIGNMENT = 'password' + '=hunter2\n';
 
 function tempRepo() {
@@ -341,6 +345,29 @@ test('explicit max budget is opt-in and forwarded to Claude', () => {
   assert.equal(args[args.indexOf('--max-budget-usd') + 1], '0.25');
 });
 
+test('repo-scoped review is labeled as repository review', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, {
+    FAKE_CLAUDE_STDIN_FILE: stdinFile,
+  });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'adversarial-review', '--cwd', repo, '--scope', 'repo', '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.targetLabel, 'repository review');
+  assert.match(payload.context.shortstat, /Repository review requested/);
+  assert.match(fs.readFileSync(stdinFile, 'utf8'), /repository review/);
+  assert.doesNotMatch(fs.readFileSync(stdinFile, 'utf8'), /working tree changes/);
+});
+
 test('malformed review output becomes needs-attention', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
@@ -383,6 +410,74 @@ test('review parser accepts common Claude review object variants', () => {
   assert.equal(normalized.parsed.findings[0].file, 'src/app.js');
   assert.equal(normalized.parsed.findings[0].line_start, 1);
   assert.deepEqual(normalized.parsed.next_steps, []);
+});
+
+test('review parser accepts grouped severity JSON', () => {
+  const normalized = normalizeReviewPayload(
+    JSON.stringify({
+      critical: [],
+      high: [
+        {
+          title: 'Deploy is not gated on CI',
+          detail: 'Deploy can run independently of CI.',
+          location: '.github/workflows/deploy.yml:9',
+          recommendation: 'Gate deploy on CI success.',
+        },
+      ],
+      medium: ['Rollback runbook is thin. Evidence: runbooks/deploy.md:12'],
+      low: 'No findings.',
+    }),
+  );
+
+  assert.equal(normalized.parseError, null);
+  assert.equal(normalized.parsed.verdict, 'changes-needed');
+  assert.equal(normalized.parsed.findings.length, 2);
+  assert.equal(normalized.parsed.findings[0].severity, 'high');
+  assert.equal(
+    normalized.parsed.findings[0].file,
+    '.github/workflows/deploy.yml',
+  );
+  assert.equal(normalized.parsed.findings[0].line_start, 9);
+  assert.equal(normalized.parsed.findings[1].severity, 'medium');
+  assert.equal(normalized.parsed.findings[1].file, 'runbooks/deploy.md');
+});
+
+test('review parser accepts markdown severity sections', () => {
+  const normalized = normalizeReviewPayload(`
+**Critical**
+No Critical findings.
+
+**High**
+- Deploy is not gated on CI. Evidence: .github/workflows/deploy.yml:9.
+
+**Medium**
+- Rollback runbook is thin. Evidence: runbooks/deploy.md:12.
+
+**Low**
+None.
+`);
+
+  assert.equal(normalized.parseError, null);
+  assert.equal(normalized.parsed.verdict, 'changes-needed');
+  assert.equal(normalized.parsed.findings.length, 2);
+  assert.equal(normalized.parsed.findings[0].severity, 'high');
+  assert.equal(
+    normalized.parsed.findings[0].file,
+    '.github/workflows/deploy.yml',
+  );
+  assert.equal(normalized.parsed.findings[0].line_start, 9);
+});
+
+test('OpenAI key heuristic avoids English slug false positives', () => {
+  assert.equal(
+    hasSecretLikeText('hooks/pre-task-confidentiality-check.md'),
+    false,
+  );
+  assert.equal(
+    redactSecretLikeText('hooks/pre-task-confidentiality-check.md'),
+    'hooks/pre-task-confidentiality-check.md',
+  );
+  assert.equal(hasSecretLikeText(FAKE_OPENAI_KEY), true);
 });
 
 test('review uses assistant transcript when result event is only progress', () => {
@@ -630,7 +725,10 @@ test('background task can be listed and cancelled', () => {
     { env },
   );
   assert.equal(status.status, 0, status.stderr);
-  assert.equal(JSON.parse(status.stdout).jobs[0].id, jobId);
+  const statusJob = JSON.parse(status.stdout).jobs[0];
+  assert.equal(statusJob.id, jobId);
+  assert.equal(statusJob.model, 'opus[1m]');
+  assert.equal(statusJob.effort, 'max');
 
   const cancel = run(
     process.execPath,

@@ -74,7 +74,7 @@ function printUsage() {
     [
       'Usage:',
       '  node scripts/claude-companion.mjs setup [--cwd <path>] [--json]',
-      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--allow-sensitive-context] [--json]',
+      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch|repo] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--allow-sensitive-context] [--json]',
       '  node scripts/claude-companion.mjs adversarial-review [same flags as review] [focus text]',
       '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [--allow-sensitive-context] [prompt]',
       '  node scripts/claude-companion.mjs status [job-id] [--all] [--json]',
@@ -160,6 +160,7 @@ function buildJob(workspaceRoot, request) {
   const id = generateJobId(request.jobClass === 'review' ? 'review' : 'task');
   const logFile = resolveJobLogFile(workspaceRoot, id);
   const resultFile = resolveJobResultFile(workspaceRoot, id);
+  const defaults = getClaudeDefaults();
   return {
     id,
     workspaceRoot,
@@ -169,7 +170,8 @@ function buildJob(workspaceRoot, request) {
     phase: 'queued',
     pid: null,
     sessionId: null,
-    model: request.model ?? null,
+    model: request.model ?? defaults.model,
+    effort: request.effort ?? defaults.effort,
     scope: request.scope ?? request.base ?? null,
     summary: request.summary,
     logFile,
@@ -557,20 +559,26 @@ async function handleReview(argv, reviewName) {
   const cwd = resolveCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const focusText = positionals.join(' ').trim();
+  const scope = options.scope ?? 'auto';
+  const targetSummary = options.base
+    ? `against ${options.base}`
+    : scope === 'repo' || scope === 'repository'
+      ? 'repository review'
+      : scope;
   const request = {
     kind: reviewName === 'Adversarial Review' ? 'adversarial-review' : 'review',
     jobClass: 'review',
     reviewName,
     cwd,
     base: options.base ?? null,
-    scope: options.scope ?? 'auto',
+    scope,
     model: options.model ?? null,
     effort: options.effort ?? null,
     timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
     maxBudgetUsd: options['max-budget-usd'] ?? null,
     allowSensitiveContext: Boolean(options['allow-sensitive-context']),
     focusText,
-    summary: `${reviewName} ${options.base ? `against ${options.base}` : (options.scope ?? 'working tree')}`,
+    summary: `${reviewName} ${targetSummary}`,
   };
   const job = buildJob(workspaceRoot, request);
   if (options.background) {

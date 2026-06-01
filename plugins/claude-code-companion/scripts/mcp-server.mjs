@@ -243,6 +243,7 @@ function pushReviewTargetArgs(args, input = {}) {
   pushArg(args, 'base', input.base);
   if (input.target === 'working_tree') pushArg(args, 'scope', 'working-tree');
   if (input.target === 'branch') pushArg(args, 'scope', 'branch');
+  if (input.target === 'none') pushArg(args, 'scope', 'repo');
 }
 
 function reviewFocusText(input = {}) {

@@ -348,6 +348,14 @@ export function normalizeReviewPayload(value) {
   try {
     parsed = extractJsonObject(value);
   } catch (error) {
+    const markdownReview = normalizeMarkdownReview(String(value ?? ''));
+    if (markdownReview) {
+      return {
+        parsed: markdownReview,
+        parseError: null,
+        rawOutput: String(value ?? ''),
+      };
+    }
     return {
       parsed: null,
       parseError: error.message,
@@ -355,12 +363,23 @@ export function normalizeReviewPayload(value) {
     };
   }
 
-  if (
-    !parsed ||
-    typeof parsed !== 'object' ||
-    typeof parsed.verdict !== 'string' ||
-    typeof parsed.summary !== 'string'
-  ) {
+  if (!parsed || typeof parsed !== 'object') {
+    return {
+      parsed: null,
+      parseError: 'Claude returned JSON with an unexpected review shape.',
+      rawOutput: String(value ?? ''),
+    };
+  }
+
+  if (typeof parsed.verdict !== 'string' || typeof parsed.summary !== 'string') {
+    const groupedReview = normalizeGroupedReview(parsed);
+    if (groupedReview) {
+      return {
+        parsed: groupedReview,
+        parseError: null,
+        rawOutput: String(value ?? ''),
+      };
+    }
     return {
       parsed: null,
       parseError: 'Claude returned JSON with an unexpected review shape.',
@@ -421,4 +440,152 @@ function normalizeFinding(finding, index) {
         ? finding.recommendation
         : '',
   };
+}
+
+const SEVERITIES = ['critical', 'high', 'medium', 'low'];
+
+function normalizeGroupedReview(parsed) {
+  const findings = [];
+  const presentSeverities = SEVERITIES.filter((severity) =>
+    Object.hasOwn(parsed, severity),
+  );
+  for (const severity of SEVERITIES) {
+    const value = parsed[severity];
+    if (!value) continue;
+    if (Array.isArray(value)) {
+      for (const finding of value) {
+        if (isNoFindingValue(finding)) continue;
+        findings.push({ ...coerceFindingObject(finding), severity });
+      }
+      continue;
+    }
+    if (!isNoFindingValue(value)) {
+      findings.push({
+        severity,
+        title: titleFromText(value),
+        body: String(value),
+        ...locationFromText(value),
+      });
+    }
+  }
+  if (!presentSeverities.length) return null;
+  return {
+    verdict: findings.some((finding) =>
+      ['critical', 'high'].includes(finding.severity),
+    )
+      ? 'changes-needed'
+      : findings.length
+        ? 'needs-attention'
+        : 'approve',
+    summary: findings.length
+      ? `Claude returned ${findings.length} grouped finding(s).`
+      : 'Claude returned no grouped findings.',
+    findings: findings.map((finding, index) =>
+      normalizeFinding(finding, index),
+    ),
+    next_steps: [],
+  };
+}
+
+function normalizeMarkdownReview(text) {
+  const sections = sectionBySeverity(text);
+  if (!sections.size) return null;
+  const findings = [];
+  for (const severity of SEVERITIES) {
+    const body = sections.get(severity);
+    if (!body || isNoFindingValue(body)) continue;
+    for (const chunk of findingChunks(body)) {
+      if (isNoFindingValue(chunk)) continue;
+      findings.push({
+        severity,
+        title: titleFromText(chunk),
+        body: chunk.trim(),
+        ...locationFromText(chunk),
+      });
+    }
+  }
+  return {
+    verdict: findings.some((finding) =>
+      ['critical', 'high'].includes(finding.severity),
+    )
+      ? 'changes-needed'
+      : findings.length
+        ? 'needs-attention'
+        : 'approve',
+    summary: findings.length
+      ? `Claude returned ${findings.length} markdown finding(s).`
+      : 'Claude returned markdown severity sections with no findings.',
+    findings: findings.map((finding, index) =>
+      normalizeFinding(finding, index),
+    ),
+    next_steps: [],
+  };
+}
+
+function sectionBySeverity(text) {
+  const sections = new Map();
+  const matches = [
+    ...String(text).matchAll(
+      /^#{0,3}\s*\*{0,2}(Critical|High|Medium|Low)\*{0,2}\b.*$/gim,
+    ),
+  ];
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const severity = match[1].toLowerCase();
+    const start = match.index + match[0].length;
+    const end = matches[index + 1]?.index ?? text.length;
+    sections.set(severity, text.slice(start, end).trim());
+  }
+  return sections;
+}
+
+function findingChunks(section) {
+  const lines = String(section)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const bulletLines = lines.filter((line) => /^[-*]\s+/.test(line));
+  if (!bulletLines.length) return [section.trim()].filter(Boolean);
+  return bulletLines.map((line) => line.replace(/^[-*]\s+/, '').trim());
+}
+
+function coerceFindingObject(value) {
+  if (value && typeof value === 'object') return value;
+  return {
+    title: titleFromText(value),
+    body: String(value ?? ''),
+    ...locationFromText(value),
+  };
+}
+
+function isNoFindingValue(value) {
+  const text = String(value ?? '').trim();
+  return !text || /^(?:none|no\b|no findings|n\/a|not applicable)/i.test(text);
+}
+
+function titleFromText(value) {
+  return String(value ?? '')
+    .split(/\r?\n|\. /)[0]
+    .replace(/^`?([^`:]+)`?:\s*/, '$1: ')
+    .slice(0, 120)
+    .trim() || 'Finding';
+}
+
+function locationFromText(value) {
+  const text = String(value ?? '');
+  const markdownLink = text.match(/\]\(([^:)]+):(\d+)\)/);
+  if (markdownLink) {
+    return {
+      file: markdownLink[1],
+      line_start: Number.parseInt(markdownLink[2], 10),
+    };
+  }
+  const inline = text.match(/([A-Za-z0-9_./-]+\.[A-Za-z0-9]+):(\d+)/);
+  if (inline) {
+    return {
+      file: inline[1],
+      line_start: Number.parseInt(inline[2], 10),
+    };
+  }
+  return {};
 }
