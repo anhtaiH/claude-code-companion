@@ -130,6 +130,33 @@ if (mode === 'stream-json') {
   }));
   process.exit(0);
 }
+if (mode === 'assistant-final') {
+  console.log(JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: JSON.stringify({
+        verdict: 'approve',
+        summary: 'Assistant transcript carried the final review.',
+        findings: [],
+        next_steps: []
+      }) }]
+    }
+  }));
+  console.log(JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    duration_ms: 1,
+    result: 'Release-risk specialist completed; waiting for final synthesis.',
+    session_id: 'fake-session-assistant-final',
+    total_cost_usd: 0.001,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    modelUsage: { fake: { inputTokens: 1, outputTokens: 1, costUSD: 0.001 } },
+    terminal_reason: 'completed'
+  }));
+  process.exit(0);
+}
 const resumeIndex = args.indexOf('--resume');
 const resumed = resumeIndex === -1 ? null : args[resumeIndex + 1];
 const sessionId = process.env.FAKE_SESSION_ID || (resumed ? 'fake-session-resumed' : 'fake-session-1');

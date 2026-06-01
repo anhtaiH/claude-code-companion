@@ -385,6 +385,26 @@ test('review parser accepts common Claude review object variants', () => {
   assert.deepEqual(normalized.parsed.next_steps, []);
 });
 
+test('review uses assistant transcript when result event is only progress', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'assistant-final' });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review.verdict, 'approve');
+  assert.equal(payload.review.summary, 'Assistant transcript carried the final review.');
+  assert.equal(payload.parseError, null);
+  assert.equal(payload.claude.resultTextSource, 'assistant-events');
+});
+
 test('streamed subagent events parse the final Claude result', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);

@@ -335,6 +335,7 @@ async function executeReviewRun(request) {
         effectiveModels: claude.effectiveModels,
         eventCount: claude.eventCount,
         terminalReason: claude.terminalReason,
+        resultTextSource: claude.resultTextSource,
       },
     },
     sessionId: claude.sessionId,
@@ -404,6 +405,7 @@ async function executeTaskRun(request) {
       effectiveModels: claude.effectiveModels,
       eventCount: claude.eventCount,
       terminalReason: claude.terminalReason,
+      resultTextSource: claude.resultTextSource,
     },
     warnings: warningForSensitiveOverride(sensitiveContext),
   };

@@ -209,11 +209,17 @@ function validateClaudeArgs(args) {
 function parseClaudeOutput(stdout) {
   const text = stdout.trim();
   if (!text) {
-    return { raw: null, parseError: null, eventCount: 0 };
+    return { raw: null, parseError: null, eventCount: 0, assistantText: '' };
   }
 
   try {
-    return { raw: JSON.parse(text), parseError: null, eventCount: 1 };
+    const raw = JSON.parse(text);
+    return {
+      raw,
+      parseError: null,
+      eventCount: 1,
+      assistantText: assistantTextFromEvents([raw]),
+    };
   } catch (error) {
     const events = [];
     for (const line of text.split(/\r?\n/)) {
@@ -225,6 +231,7 @@ function parseClaudeOutput(stdout) {
           raw: null,
           parseError: error.message,
           eventCount: events.length,
+          assistantText: assistantTextFromEvents(events),
         };
       }
     }
@@ -233,8 +240,22 @@ function parseClaudeOutput(stdout) {
       raw: result,
       parseError: result ? null : error.message,
       eventCount: events.length,
+      assistantText: assistantTextFromEvents(events),
     };
   }
+}
+
+function assistantTextFromEvents(events) {
+  return events.flatMap((event) => textFragmentsFromEvent(event)).join('\n\n');
+}
+
+function textFragmentsFromEvent(event) {
+  const content = event?.message?.content;
+  if (typeof content === 'string') return [content];
+  if (!Array.isArray(content)) return [];
+  return content
+    .map((entry) => (entry?.type === 'text' ? entry.text : null))
+    .filter((entry) => typeof entry === 'string' && entry.trim());
 }
 
 export function runClaudePrint(cwd, prompt, options = {}) {
@@ -268,6 +289,17 @@ export function runClaudePrint(cwd, prompt, options = {}) {
   const raw = parsed.raw;
   const parseError = parsed.parseError;
   const status = result.ok && raw != null ? result.status : result.status || 1;
+  const rawResultText =
+    typeof raw?.result === 'string'
+      ? raw.result
+      : raw?.result == null
+        ? ''
+        : JSON.stringify(raw.result);
+  const assistantText = parsed.assistantText.trim();
+  const resultText =
+    assistantText.length > rawResultText.trim().length
+      ? assistantText
+      : rawResultText;
 
   return {
     ok: result.ok && raw != null,
@@ -277,12 +309,11 @@ export function runClaudePrint(cwd, prompt, options = {}) {
     stderr: result.stderr,
     raw,
     eventCount: parsed.eventCount,
-    resultText:
-      typeof raw?.result === 'string'
-        ? raw.result
-        : raw?.result == null
-          ? ''
-          : JSON.stringify(raw.result),
+    resultText,
+    resultTextSource:
+      resultText === assistantText && assistantText
+        ? 'assistant-events'
+        : 'result-event',
     sessionId: raw?.session_id ?? null,
     totalCostUsd: raw?.total_cost_usd ?? null,
     usage: raw?.usage ?? null,
