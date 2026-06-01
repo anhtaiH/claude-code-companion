@@ -100,7 +100,7 @@ if (mode === 'malformed') {
   process.exit(0);
 }
 if (mode === 'secret') {
-  console.log(JSON.stringify({ type: 'result', result: 'token=sk-abcdefghijklmnopqrstuvwxyz', session_id: 'fake-session-secret' }));
+  console.log(JSON.stringify({ type: 'result', result: 'token' + '=' + 'sk-' + 'abcdefghijklmnopqrstuvwxyz', session_id: 'fake-session-secret' }));
   process.exit(0);
 }
 if (mode === 'nonzero') {

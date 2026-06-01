@@ -1,9 +1,8 @@
 import fs from 'node:fs';
 import process from 'node:process';
 import { binaryAvailable, runSync } from './process.mjs';
+import { hasSecretLikeText } from './safety.mjs';
 
-const SECRET_PATTERN =
-  /(?:sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY|password\s*=|secret\s*=|token\s*=)/i;
 const READ_ONLY_TOOLS = 'Read,Glob,Grep,Bash,Agent';
 const READ_ONLY_ALLOWED_TOOLS =
   'Read,Glob,Grep,Agent,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)';
@@ -12,10 +11,7 @@ const DEFAULT_MODEL = 'opus[1m]';
 const DEFAULT_EFFORT = 'max';
 const AGENT_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
 const AGENT_DISALLOWED_TOOLS = ['Edit', 'Write'];
-
-export function hasSecretLikeText(value) {
-  return SECRET_PATTERN.test(String(value ?? ''));
-}
+export { hasSecretLikeText };
 
 export function getClaudeAvailability(cwd) {
   return binaryAvailable('claude', ['--version'], { cwd });
@@ -157,6 +153,8 @@ function buildClaudeArgs(options = {}) {
     args.push('--settings', JSON.stringify(buildClaudeSettings()));
   if (options.subagents !== false)
     args.push('--agents', JSON.stringify(buildCompanionAgents()));
+  if (options.maxBudgetUsd)
+    args.push('--max-budget-usd', String(options.maxBudgetUsd));
   if (options.jsonSchema)
     args.push('--json-schema', JSON.stringify(options.jsonSchema));
   return args;
@@ -330,9 +328,7 @@ export function normalizeReviewPayload(value) {
     !parsed ||
     typeof parsed !== 'object' ||
     typeof parsed.verdict !== 'string' ||
-    typeof parsed.summary !== 'string' ||
-    !Array.isArray(parsed.findings) ||
-    !Array.isArray(parsed.next_steps)
+    typeof parsed.summary !== 'string'
   ) {
     return {
       parsed: null,
@@ -341,34 +337,57 @@ export function normalizeReviewPayload(value) {
     };
   }
 
+  const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+  const nextSteps = Array.isArray(parsed.next_steps)
+    ? parsed.next_steps
+    : Array.isArray(parsed.nextSteps)
+      ? parsed.nextSteps
+      : [];
+
   return {
     parsed: {
       verdict: parsed.verdict,
       summary: parsed.summary,
-      findings: parsed.findings.map((finding, index) => ({
-        severity:
-          typeof finding?.severity === 'string' ? finding.severity : 'low',
-        title:
-          typeof finding?.title === 'string'
-            ? finding.title
-            : `Finding ${index + 1}`,
-        body:
-          typeof finding?.body === 'string'
-            ? finding.body
-            : 'No details provided.',
-        file: typeof finding?.file === 'string' ? finding.file : 'unknown',
-        line_start: Number.isInteger(finding?.line_start)
-          ? finding.line_start
-          : null,
-        line_end: Number.isInteger(finding?.line_end) ? finding.line_end : null,
-        recommendation:
-          typeof finding?.recommendation === 'string'
-            ? finding.recommendation
-            : '',
-      })),
-      next_steps: parsed.next_steps.filter((step) => typeof step === 'string'),
+      findings: findings.map((finding, index) =>
+        normalizeFinding(finding, index),
+      ),
+      next_steps: nextSteps.filter((step) => typeof step === 'string'),
     },
     parseError: null,
     rawOutput: String(value ?? ''),
+  };
+}
+
+function normalizeFinding(finding, index) {
+  const location =
+    typeof finding?.location === 'string' ? finding.location : '';
+  const locationMatch = location.match(/^(.+?)(?::(\d+))?$/);
+  const parsedLine = Number.parseInt(locationMatch?.[2] ?? '', 10);
+  return {
+    severity: typeof finding?.severity === 'string' ? finding.severity : 'low',
+    title:
+      typeof finding?.title === 'string'
+        ? finding.title
+        : `Finding ${index + 1}`,
+    body:
+      typeof finding?.body === 'string'
+        ? finding.body
+        : typeof finding?.detail === 'string'
+          ? finding.detail
+          : 'No details provided.',
+    file:
+      typeof finding?.file === 'string'
+        ? finding.file
+        : locationMatch?.[1] || 'unknown',
+    line_start: Number.isInteger(finding?.line_start)
+      ? finding.line_start
+      : Number.isInteger(parsedLine)
+        ? parsedLine
+        : null,
+    line_end: Number.isInteger(finding?.line_end) ? finding.line_end : null,
+    recommendation:
+      typeof finding?.recommendation === 'string'
+        ? finding.recommendation
+        : '',
   };
 }

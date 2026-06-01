@@ -36,6 +36,16 @@ const TASK_KIND_PROMPTS = {
 const REVIEW_KINDS = ['review', 'adversarial_review'];
 const TASK_KINDS = Object.keys(TASK_KIND_PROMPTS);
 const ALL_KINDS = [...REVIEW_KINDS, ...TASK_KINDS];
+const DANGEROUS_INPUT_KEYS = [
+  'write',
+  'edit',
+  'dangerously_skip_permissions',
+  'dangerously-skip-permissions',
+  'allow_dangerously_skip_permissions',
+  'allow-dangerously-skip-permissions',
+  'permission_mode',
+  'permission-mode',
+];
 
 const tools = [
   {
@@ -99,6 +109,16 @@ const tools = [
         timeout_ms: {
           type: 'integer',
           description: 'Optional timeout in milliseconds.',
+        },
+        max_budget_usd: {
+          type: 'number',
+          description:
+            'Optional Claude Code max-budget-usd guard. No dollar budget is set by default.',
+        },
+        allow_sensitive_context: {
+          type: 'boolean',
+          description:
+            'Explicitly override default outbound secret-like context blocking. Use only when the user has approved sending that context to Claude.',
         },
         background: {
           type: 'boolean',
@@ -198,11 +218,24 @@ function pushArg(args, name, value) {
   args.push(`--${name}`, String(value));
 }
 
+function rejectDangerousInput(input = {}) {
+  const found = DANGEROUS_INPUT_KEYS.filter((key) =>
+    Object.hasOwn(input, key),
+  );
+  if (found.length) {
+    throw new Error(
+      `Claude Code Companion is read-only; refusing MCP input(s): ${found.join(', ')}`,
+    );
+  }
+}
+
 function pushSharedRuntimeArgs(args, input = {}) {
   pushArg(args, 'cwd', input.cwd);
   pushArg(args, 'model', input.model);
   pushArg(args, 'effort', input.effort);
   pushArg(args, 'timeout-ms', input.timeout_ms);
+  pushArg(args, 'max-budget-usd', input.max_budget_usd);
+  pushArg(args, 'allow-sensitive-context', input.allow_sensitive_context);
   pushArg(args, 'background', input.background);
 }
 
@@ -262,6 +295,8 @@ function delegateArgs(input = {}) {
 }
 
 function companionArgs(input = {}) {
+  rejectDangerousInput(input);
+
   if (input.action === 'setup') {
     const args = [COMPANION, 'setup', '--json'];
     pushArg(args, 'cwd', input.cwd);
@@ -338,6 +373,7 @@ function promptText(name, input = {}) {
     return [
       'Stay in this Codex session and delegate a read-only second-model review to Claude Code.',
       'Call the single `claude_code` tool with `action: "delegate"`, `kind: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
+      'Do not set `allow_sensitive_context` unless the user explicitly approves sending secret-like context to Claude.',
       input.focus ? `Focus on: ${input.focus}.` : '',
       'When the job finishes, fetch the result through `claude_code` with `action: "result"`, then present findings by severity and include the Claude session id. Do not edit files until the user asks.',
     ]
@@ -412,7 +448,7 @@ rl.on('line', (line) => {
       respond(message.id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'claude', version: '0.1.0' },
+        serverInfo: { name: 'claude', version: '1.0.0' },
       });
     } else if (message.method === 'tools/list') {
       respond(message.id, { tools });

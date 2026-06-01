@@ -28,6 +28,8 @@ codex plugin remove "${plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
 codex plugin remove "${legacy_plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
 codex plugin marketplace remove "${marketplace_name}" >/dev/null 2>&1 || true
 codex mcp remove "${marketplace_name}" >/dev/null 2>&1 || true
+codex mcp remove "${plugin_name}" >/dev/null 2>&1 || true
+codex mcp remove "${legacy_plugin_name}" >/dev/null 2>&1 || true
 
 codex plugin marketplace add "${source_spec}"
 install_output="$(codex plugin add "${plugin_name}@${marketplace_name}")"

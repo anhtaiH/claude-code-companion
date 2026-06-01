@@ -3,9 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  assertValidJobId,
   listJobs,
+  readJobFile,
+  readResultFile,
+  resolveJobResultFile,
+  resolveStateFile,
   upsertJob,
+  writeJobFile,
 } from '../plugins/claude-code-companion/scripts/lib/state.mjs';
+import { normalizeReviewPayload } from '../plugins/claude-code-companion/scripts/lib/claude.mjs';
 import {
   buildEnv,
   COMPANION,
@@ -54,6 +61,8 @@ const EXPECTED_COMMANDS = {
   result: { action: 'result' },
   cancel: { action: 'cancel' },
 };
+const FAKE_OPENAI_KEY = 'sk-' + 'abcdefghijklmnopqrstuvwxyz';
+const FAKE_PASSWORD_ASSIGNMENT = 'password' + '=hunter2\n';
 
 function tempRepo() {
   const repo = makeTempDir();
@@ -70,6 +79,10 @@ function tempRepo() {
     'export const value = items[0].id;\n',
   );
   return repo;
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 test('plugin manifest installs as claude from the companion marketplace', () => {
@@ -90,7 +103,7 @@ test('plugin manifest installs as claude from the companion marketplace', () => 
   );
 
   assert.equal(manifest.name, 'claude');
-  assert.ok(mcp.mcpServers.claude);
+  assert.ok(mcp.mcpServers['claude-code-companion']);
   assert.equal(marketplace.name, 'claude-code-companion');
   assert.equal(marketplace.plugins[0].name, 'claude');
 
@@ -302,6 +315,32 @@ test('explicit model and effort override the default Opus Ultracode mode', () =>
   assert.equal(args.includes('--agents'), true);
 });
 
+test('explicit max budget is opt-in and forwarded to Claude', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'review',
+      '--cwd',
+      repo,
+      '--max-budget-usd',
+      '0.25',
+      '--json',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--max-budget-usd') + 1], '0.25');
+});
+
 test('malformed review output becomes needs-attention', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
@@ -318,6 +357,32 @@ test('malformed review output becomes needs-attention', () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.review.verdict, 'needs-attention');
   assert.match(payload.review.summary, /could not be parsed/i);
+  assert.equal(payload.rawOutput, 'not-json');
+});
+
+test('review parser accepts common Claude review object variants', () => {
+  const normalized = normalizeReviewPayload(
+    JSON.stringify({
+      verdict: 'approve',
+      summary: 'No blockers.',
+      findings: [
+        {
+          severity: 'info',
+          title: 'Opaque constant',
+          detail: 'The exported constant has no consumers.',
+          location: 'src/app.js:1',
+          recommendation: 'No action required.',
+        },
+      ],
+    }),
+  );
+
+  assert.equal(normalized.parseError, null);
+  assert.equal(normalized.parsed.verdict, 'approve');
+  assert.equal(normalized.parsed.findings[0].body, 'The exported constant has no consumers.');
+  assert.equal(normalized.parsed.findings[0].file, 'src/app.js');
+  assert.equal(normalized.parsed.findings[0].line_start, 1);
+  assert.deepEqual(normalized.parsed.next_steps, []);
 });
 
 test('streamed subagent events parse the final Claude result', () => {
@@ -339,7 +404,7 @@ test('streamed subagent events parse the final Claude result', () => {
   assert.equal(payload.claude.eventCount, 2);
 });
 
-test('secret-like output is not persisted', () => {
+test('secret-like Claude output is redacted and persisted', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
@@ -351,8 +416,130 @@ test('secret-like output is not persisted', () => {
     { env },
   );
 
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /secret-like text/i);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(JSON.stringify(payload).includes(FAKE_OPENAI_KEY), false);
+  assert.match(payload.rawOutput, /\[REDACTED:token-assignment\]/);
+  assert.ok(payload.redactions.some((entry) => entry.category === 'openai-api-key'));
+
+  const stored = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, '--json'],
+    { env },
+  );
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.result.rawOutput, payload.rawOutput);
+});
+
+test('secret-like tracked diff blocks before Claude is invoked', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  fs.writeFileSync(
+    path.join(repo, 'src', 'app.js'),
+    `export const token = '${FAKE_OPENAI_KEY}';\n`,
+  );
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 2);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.code, 'SensitiveContextError');
+  assert.ok(
+    payload.sensitiveContext.some(
+      (entry) =>
+        entry.sourceKind === 'tracked-diff' &&
+        entry.category === 'openai-api-key',
+    ),
+  );
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('secret-like untracked file blocks before Claude is invoked', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  fs.writeFileSync(path.join(repo, 'scratch.env'), FAKE_PASSWORD_ASSIGNMENT);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 2);
+  const payload = JSON.parse(result.stdout);
+  assert.ok(
+    payload.sensitiveContext.some(
+      (entry) =>
+        entry.sourceKind === 'untracked-file' &&
+        entry.path === 'scratch.env' &&
+        entry.category === 'password-assignment',
+    ),
+  );
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('gitignored secret-like files are skipped from outbound scanning', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'secrets.env\n');
+  run('git', ['add', '.gitignore'], { cwd: repo });
+  run('git', ['commit', '-m', 'ignore secrets'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'secrets.env'), FAKE_PASSWORD_ASSIGNMENT);
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review.verdict, 'changes-needed');
+});
+
+test('explicit sensitive-context override works and records a warning', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  fs.writeFileSync(
+    path.join(repo, 'src', 'app.js'),
+    `export const token = '${FAKE_OPENAI_KEY}';\n`,
+  );
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'review',
+      '--cwd',
+      repo,
+      '--allow-sensitive-context',
+      '--json',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review.verdict, 'changes-needed');
+  assert.equal(payload.warnings[0].type, 'sensitive-context-override');
+  assert.ok(fs.existsSync(argsFile));
 });
 
 test('read-only mode rejects write flags', () => {
@@ -434,6 +621,44 @@ test('background task can be listed and cancelled', () => {
   assert.equal(JSON.parse(cancel.stdout).status, 'cancelled');
 });
 
+test('background task completes and result is fetched without transcript recovery', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const started = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--background', 'inspect', '--json'],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const jobId = JSON.parse(started.stdout).jobId;
+
+  let statusPayload = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const status = run(
+      process.execPath,
+      [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+      { env },
+    );
+    assert.equal(status.status, 0, status.stderr);
+    statusPayload = JSON.parse(status.stdout);
+    if (statusPayload.jobs[0]?.status === 'completed') break;
+    sleep(50);
+  }
+
+  assert.equal(statusPayload.jobs[0].status, 'completed');
+  const result = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const resultPayload = JSON.parse(result.stdout);
+  assert.equal(resultPayload.result.rawOutput, 'Handled task');
+});
+
 test('job state keeps only the latest fifty jobs', () => {
   const workspace = makeTempDir();
   const stateDir = makeTempDir();
@@ -453,6 +678,58 @@ test('job state keeps only the latest fifty jobs', () => {
       delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
     else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
   }
+});
+
+test('corrupt state files recover to an empty job list', () => {
+  const workspace = makeTempDir();
+  const stateDir = makeTempDir();
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR = stateDir;
+  try {
+    const stateFile = resolveStateFile(workspace);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, '{not valid json');
+    assert.deepEqual(listJobs(workspace), []);
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+});
+
+test('corrupt job and result files fail closed without throwing', () => {
+  const workspace = makeTempDir();
+  const stateDir = makeTempDir();
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR = stateDir;
+  try {
+    const jobId = 'task-test-corrupt';
+    writeJobFile(workspace, jobId, { id: jobId, status: 'completed' });
+    fs.writeFileSync(resolveJobResultFile(workspace, jobId), '{bad result');
+
+    assert.deepEqual(readJobFile(workspace, jobId), {
+      id: jobId,
+      status: 'completed',
+    });
+    assert.equal(readResultFile(workspace, jobId), null);
+
+    const badJobId = 'task-test-badjob';
+    const badJobPath = path.join(
+      path.dirname(resolveJobResultFile(workspace, badJobId)),
+      `${badJobId}.json`,
+    );
+    fs.writeFileSync(badJobPath, '{bad job');
+    assert.equal(readJobFile(workspace, badJobId), null);
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+});
+
+test('job id traversal is rejected', () => {
+  assert.throws(() => assertValidJobId('../bad'), /Invalid/);
+  assert.throws(() => assertValidJobId('task-bad/evil'), /Invalid/);
 });
 
 test('MCP server exposes exactly one agent-native tool and prompt templates', () => {
@@ -500,7 +777,14 @@ test('MCP server exposes exactly one agent-native tool and prompt templates', ()
       responses[1].result.tools[0].inputSchema.properties,
       'max_budget_usd',
     ),
-    false,
+    true,
+  );
+  assert.equal(
+    Object.hasOwn(
+      responses[1].result.tools[0].inputSchema.properties,
+      'allow_sensitive_context',
+    ),
+    true,
   );
   assert.deepEqual(
     responses[1].result.tools[0].inputSchema.properties.kind.enum,
@@ -559,6 +843,74 @@ test('MCP claude_code delegate action routes to fake Claude review', () => {
   const payload = JSON.parse(toolText);
   assert.equal(payload.review.verdict, 'changes-needed');
   assert.equal(payload.sessionId, 'fake-session-1');
+});
+
+test('MCP claude_code forwards budget and sensitive-context override', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  fs.writeFileSync(
+    path.join(repo, 'src', 'app.js'),
+    `export const token = '${FAKE_OPENAI_KEY}';\n`,
+  );
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'review',
+          cwd: repo,
+          target: 'working_tree',
+          max_budget_usd: 0.5,
+          allow_sensitive_context: true,
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.result.isError, false);
+  const payload = JSON.parse(response.result.content[0].text);
+  assert.equal(payload.warnings[0].type, 'sensitive-context-override');
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--max-budget-usd') + 1], '0.5');
+});
+
+test('MCP claude_code rejects write and dangerous inputs', () => {
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'diagnose',
+          prompt: 'fix this',
+          write: true,
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { input });
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /read-only/i);
 });
 
 test('MCP claude_code delegate action supports every advertised kind', () => {

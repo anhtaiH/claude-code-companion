@@ -1,10 +1,10 @@
 {
   "name": "claude-code-companion",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Codex plugin and MCP companion for read-only Claude Code review, diagnosis, and planning.",
   "license": "Apache-2.0",
-  "author": "anhtaiH",
+  "author": "Anhtai Huynh",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/anhtaiH/claude-code-companion.git"
@@ -23,7 +23,7 @@
     "model-diversity"
   ],
   "engines": {
-    "node": ">=18.18.0"
+    "node": ">=20.0.0"
   },
   "files": [
     ".agents/plugins/marketplace.json",
@@ -31,6 +31,8 @@
     "tests/",
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "docs/",
     "install.sh",
     "README.md",
     "SECURITY.md",

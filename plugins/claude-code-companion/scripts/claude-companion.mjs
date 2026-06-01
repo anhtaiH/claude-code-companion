@@ -10,7 +10,6 @@ import {
   getClaudeAuthStatus,
   getClaudeAvailability,
   getClaudeDefaults,
-  hasSecretLikeText,
   normalizeReviewPayload,
   readJsonSchema,
   runClaudePrint,
@@ -53,6 +52,11 @@ import {
   writeJobFile,
   writeResultFile,
 } from './lib/state.mjs';
+import {
+  blockSensitiveContext,
+  redactSecretLikeText,
+  redactSensitivePayload,
+} from './lib/safety.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
@@ -70,9 +74,9 @@ function printUsage() {
     [
       'Usage:',
       '  node scripts/claude-companion.mjs setup [--cwd <path>] [--json]',
-      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--json]',
+      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--allow-sensitive-context] [--json]',
       '  node scripts/claude-companion.mjs adversarial-review [same flags as review] [focus text]',
-      '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [prompt]',
+      '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [--allow-sensitive-context] [prompt]',
       '  node scripts/claude-companion.mjs status [job-id] [--all] [--json]',
       '  node scripts/claude-companion.mjs result [job-id] [--json]',
       '  node scripts/claude-companion.mjs cancel [job-id] [--json]',
@@ -176,13 +180,43 @@ function buildJob(workspaceRoot, request) {
 }
 
 function safePersistResult(workspaceRoot, jobId, payload) {
-  const serialized = JSON.stringify(payload);
-  if (hasSecretLikeText(serialized)) {
-    throw new Error(
-      'Claude output contained secret-like text; refusing to persist it.',
-    );
-  }
   return writeResultFile(workspaceRoot, jobId, payload);
+}
+
+function renderExecutionPayload(payload, fallback = '') {
+  if (payload?.review) {
+    return renderReviewResult({
+      reviewName: payload.reviewName,
+      targetLabel: payload.targetLabel,
+      sessionId: payload.sessionId,
+      review: payload.review,
+    });
+  }
+  if (Object.hasOwn(payload ?? {}, 'rawOutput')) return renderTaskResult(payload);
+  return fallback || `${JSON.stringify(payload, null, 2)}\n`;
+}
+
+function finalizeExecution(execution) {
+  const redacted = redactSensitivePayload(execution.payload);
+  if (!redacted.redactions.length) return execution;
+  return {
+    ...execution,
+    payload: redacted.payload,
+    rendered: renderExecutionPayload(redacted.payload, execution.rendered),
+    summary: redactSecretLikeText(execution.summary),
+  };
+}
+
+function warningForSensitiveOverride(findings) {
+  if (!findings.length) return [];
+  return [
+    {
+      type: 'sensitive-context-override',
+      message:
+        'Sensitive-looking outbound context was allowed because an explicit override was set.',
+      findings,
+    },
+  ];
 }
 
 function buildDiffBlock(context) {
@@ -204,6 +238,33 @@ function buildReviewPrompt(context, reviewName, focusText) {
   });
 }
 
+function reviewSensitiveSources(context, focusText) {
+  return [
+    {
+      sourceKind: 'tracked-diff',
+      path: context.target.label,
+      text: context.diffScanText,
+    },
+    {
+      sourceKind: 'focus-text',
+      text: focusText,
+    },
+    {
+      sourceKind: 'repo-instructions',
+      text: context.repoContext,
+    },
+    {
+      sourceKind: 'git-context',
+      text: context.gitContext,
+    },
+    ...context.untracked.entries.map((entry) => ({
+      sourceKind: 'untracked-file',
+      path: entry.path,
+      text: entry.content,
+    })),
+  ];
+}
+
 function fallbackReview(summary) {
   return {
     verdict: 'needs-attention',
@@ -221,11 +282,16 @@ async function executeReviewRun(request) {
   const context = collectReviewContext(request.cwd, target);
   const schema = readJsonSchema(REVIEW_SCHEMA_PATH);
   const reviewName = request.reviewName;
+  const sensitiveContext = blockSensitiveContext(
+    reviewSensitiveSources(context, request.focusText),
+    { allowSensitiveContext: request.allowSensitiveContext },
+  );
   const prompt = buildReviewPrompt(context, reviewName, request.focusText);
   const claude = runClaudePrint(context.repoRoot, prompt, {
     model: request.model,
     effort: request.effort,
     timeoutMs: request.timeoutMs,
+    maxBudgetUsd: request.maxBudgetUsd,
     jsonSchema: schema,
   });
 
@@ -252,6 +318,8 @@ async function executeReviewRun(request) {
       sessionId: claude.sessionId,
       review,
       parseError: parsed.parseError,
+      rawOutput: parsed.parseError ? parsed.rawOutput : undefined,
+      warnings: warningForSensitiveOverride(sensitiveContext),
       context: {
         repoRoot: context.repoRoot,
         branch: context.branch,
@@ -277,33 +345,50 @@ async function executeReviewRun(request) {
 function buildTaskPrompt(cwd, prompt) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const repoContext = collectRepoInstructions(workspaceRoot);
-  return [
-    'You are Claude Code running as a read-only companion for Codex.',
-    'Do not edit files, run mutating commands, or ask for permission bypasses.',
-    'Use read-only repository inspection tools when they help the task.',
-    'Use Claude Code dynamic workflows for substantive tasks when helpful.',
-    'Maintain an internal plan, progress ledger, and evidence ledger for this session.',
-    'Use focused subagents when they improve the result: codebase-researcher, test-gap-reviewer, security-reviewer, architecture-critic, release-risk-reviewer, and log-diagnostician.',
-    'Return one synthesized result for Codex. Do not include raw subagent transcripts.',
-    '',
-    '## Repository Context',
+  return {
     repoContext,
-    '',
-    '## Task',
-    prompt,
-  ].join('\n');
+    prompt: [
+      'You are Claude Code running as a read-only companion for Codex.',
+      'Do not edit files, run mutating commands, or ask for permission bypasses.',
+      'Use read-only repository inspection tools when they help the task.',
+      'Use Claude Code dynamic workflows for substantive tasks when helpful.',
+      'Maintain an internal plan, progress ledger, and evidence ledger for this session.',
+      'Use focused subagents when they improve the result: codebase-researcher, test-gap-reviewer, security-reviewer, architecture-critic, release-risk-reviewer, and log-diagnostician.',
+      'Return one synthesized result for Codex. Do not include raw subagent transcripts.',
+      '',
+      '## Repository Context',
+      repoContext,
+      '',
+      '## Task',
+      prompt,
+    ].join('\n'),
+  };
 }
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
-  const prompt = buildTaskPrompt(
+  const task = buildTaskPrompt(
     workspaceRoot,
     request.prompt || DEFAULT_CONTINUE_PROMPT,
   );
-  const claude = runClaudePrint(workspaceRoot, prompt, {
+  const sensitiveContext = blockSensitiveContext(
+    [
+      {
+        sourceKind: 'task-prompt',
+        text: request.prompt || DEFAULT_CONTINUE_PROMPT,
+      },
+      {
+        sourceKind: 'repo-instructions',
+        text: task.repoContext,
+      },
+    ],
+    { allowSensitiveContext: request.allowSensitiveContext },
+  );
+  const claude = runClaudePrint(workspaceRoot, task.prompt, {
     model: request.model,
     effort: request.effort,
     timeoutMs: request.timeoutMs,
+    maxBudgetUsd: request.maxBudgetUsd,
     resumeSessionId: request.resumeSessionId,
   });
 
@@ -320,6 +405,7 @@ async function executeTaskRun(request) {
       eventCount: claude.eventCount,
       terminalReason: claude.terminalReason,
     },
+    warnings: warningForSensitiveOverride(sensitiveContext),
   };
 
   return {
@@ -346,7 +432,7 @@ async function runForegroundJob(job, request, runner, asJson) {
   writeJobFile(job.workspaceRoot, job.id, running);
 
   try {
-    const execution = await runner(request);
+    const execution = finalizeExecution(await runner(request));
     const status = execution.exitStatus === 0 ? 'completed' : 'failed';
     const resultFile = safePersistResult(
       job.workspaceRoot,
@@ -375,12 +461,12 @@ async function runForegroundJob(job, request, runner, asJson) {
       status: 'failed',
       phase: 'failed',
       pid: null,
-      errorMessage: error.message,
+      errorMessage: redactSecretLikeText(error.message),
       completedAt: nowIso(),
     };
     upsertJob(job.workspaceRoot, next);
     writeJobFile(job.workspaceRoot, job.id, next);
-    appendLogLine(job.logFile, `Failed: ${error.message}`);
+    appendLogLine(job.logFile, `Failed: ${redactSecretLikeText(error.message)}`);
     throw error;
   }
 }
@@ -438,6 +524,7 @@ function parseCommonOptions(argv, extra = {}) {
       'model',
       'effort',
       'timeout-ms',
+      'max-budget-usd',
       'cwd',
       'job-id',
     ],
@@ -449,6 +536,7 @@ function parseCommonOptions(argv, extra = {}) {
       'resume-last',
       'resume',
       'fresh',
+      'allow-sensitive-context',
     ],
     aliasMap: { C: 'cwd', m: 'model', ...extra.aliasMap },
   });
@@ -477,6 +565,8 @@ async function handleReview(argv, reviewName) {
     model: options.model ?? null,
     effort: options.effort ?? null,
     timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
+    maxBudgetUsd: options['max-budget-usd'] ?? null,
+    allowSensitiveContext: Boolean(options['allow-sensitive-context']),
     focusText,
     summary: `${reviewName} ${options.base ? `against ${options.base}` : (options.scope ?? 'working tree')}`,
   };
@@ -501,11 +591,19 @@ async function handleTask(argv) {
       'model',
       'effort',
       'timeout-ms',
+      'max-budget-usd',
       'cwd',
       'prompt-file',
       'kind',
     ],
-    booleanOptions: ['json', 'background', 'resume-last', 'resume', 'fresh'],
+    booleanOptions: [
+      'json',
+      'background',
+      'resume-last',
+      'resume',
+      'fresh',
+      'allow-sensitive-context',
+    ],
     aliasMap: { C: 'cwd', m: 'model' },
   });
   rejectWriteOptions(options);
@@ -533,6 +631,8 @@ async function handleTask(argv) {
     model: options.model ?? null,
     effort: options.effort ?? null,
     timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
+    maxBudgetUsd: options['max-budget-usd'] ?? null,
+    allowSensitiveContext: Boolean(options['allow-sensitive-context']),
     summary:
       prompt.split(/\s+/).slice(0, 14).join(' ') || DEFAULT_CONTINUE_PROMPT,
   };
@@ -667,8 +767,25 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\n`,
+  const message = redactSecretLikeText(
+    error instanceof Error ? error.message : String(error),
   );
-  process.exitCode = 1;
+  const exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1;
+  if (process.argv.includes('--json')) {
+    output(
+      {
+        ok: false,
+        error: message,
+        code: error?.name ?? 'Error',
+        sensitiveContext: Array.isArray(error?.findings)
+          ? error.findings
+          : undefined,
+      },
+      '',
+      true,
+    );
+  } else {
+    process.stderr.write(`${message}\n`);
+  }
+  process.exitCode = exitCode;
 });

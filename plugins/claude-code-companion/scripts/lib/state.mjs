@@ -6,6 +6,7 @@ import { nowIso } from './process.mjs';
 
 const STATE_VERSION = 1;
 const MAX_JOBS = 50;
+const JOB_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/;
 
 function canonicalPath(value) {
   const resolved = path.resolve(value);
@@ -71,30 +72,51 @@ export function ensureStateDir(workspaceRoot) {
 }
 
 export function resolveJobFile(workspaceRoot, jobId) {
+  assertValidJobId(jobId);
   return path.join(resolveJobsDir(workspaceRoot), `${jobId}.json`);
 }
 
 export function resolveJobLogFile(workspaceRoot, jobId) {
+  assertValidJobId(jobId);
   return path.join(resolveJobsDir(workspaceRoot), `${jobId}.log`);
 }
 
 export function resolveJobResultFile(workspaceRoot, jobId) {
+  assertValidJobId(jobId);
   return path.join(resolveJobsDir(workspaceRoot), `${jobId}.result.json`);
+}
+
+export function assertValidJobId(jobId) {
+  if (!JOB_ID_PATTERN.test(String(jobId ?? ''))) {
+    throw new Error('Invalid Claude Code Companion job id.');
+  }
+}
+
+function readJsonFile(filePath, fallback = null) {
+  if (!fs.existsSync(filePath)) return fallback;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeFileAtomic(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, content);
+  fs.renameSync(tempPath, filePath);
 }
 
 export function loadState(workspaceRoot) {
   const filePath = resolveStateFile(workspaceRoot);
-  if (!fs.existsSync(filePath)) return defaultState();
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    return {
-      ...defaultState(),
-      ...parsed,
-      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
-    };
-  } catch {
-    return defaultState();
-  }
+  const parsed = readJsonFile(filePath, null);
+  if (!parsed) return defaultState();
+  return {
+    ...defaultState(),
+    ...parsed,
+    jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+  };
 }
 
 function pruneJobs(jobs) {
@@ -111,7 +133,7 @@ export function saveState(workspaceRoot, state) {
     version: STATE_VERSION,
     jobs: pruneJobs(state.jobs ?? []),
   };
-  fs.writeFileSync(
+  writeFileAtomic(
     resolveStateFile(workspaceRoot),
     `${JSON.stringify(next, null, 2)}\n`,
   );
@@ -164,27 +186,25 @@ export function sortJobsNewestFirst(jobs) {
 export function writeJobFile(workspaceRoot, jobId, payload) {
   ensureStateDir(workspaceRoot);
   const filePath = resolveJobFile(workspaceRoot, jobId);
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+  writeFileAtomic(filePath, `${JSON.stringify(payload, null, 2)}\n`);
   return filePath;
 }
 
 export function readJobFile(workspaceRoot, jobId) {
   const filePath = resolveJobFile(workspaceRoot, jobId);
-  if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return readJsonFile(filePath, null);
 }
 
 export function writeResultFile(workspaceRoot, jobId, payload) {
   ensureStateDir(workspaceRoot);
   const filePath = resolveJobResultFile(workspaceRoot, jobId);
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+  writeFileAtomic(filePath, `${JSON.stringify(payload, null, 2)}\n`);
   return filePath;
 }
 
 export function readResultFile(workspaceRoot, jobId) {
   const filePath = resolveJobResultFile(workspaceRoot, jobId);
-  if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return readJsonFile(filePath, null);
 }
 
 export function appendLogLine(filePath, line) {
@@ -203,6 +223,7 @@ export function readLogPreview(filePath, limit = 20) {
 }
 
 export function findJob(workspaceRoot, reference = '') {
+  if (reference && !/^[a-z0-9_-]+$/i.test(reference)) return null;
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   if (!reference) {
     return jobs[0] ?? null;

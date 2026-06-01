@@ -3,6 +3,8 @@
 Use Claude Code from inside Codex for review, diagnosis, planning, and research.
 Codex stays in charge; Claude is the side helper.
 
+This is the canonical public repository for the `claude` Codex plugin.
+
 ## Install
 
 ```bash
@@ -19,6 +21,8 @@ $claude setup
 
 If Claude Code is not signed in, run `claude auth login` and rerun the
 installer.
+
+More detail: [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Usage
 
@@ -81,15 +85,38 @@ Under the hood, Claude also gets read-only specialist subagents for codebase
 research, test gaps, security, architecture, release risk, and log diagnosis.
 Claude manages that internal work and returns one synthesized result to Codex.
 
-Usage is handled by your Claude Code plan; the companion does not set a
-per-call budget.
+Before any Claude call, the companion scans tracked diffs, untracked file
+bodies, task prompts, focus text, and repo instruction context for secret-like
+content. It blocks by default with exit code `2`. Use
+`--allow-sensitive-context` or MCP `allow_sensitive_context` only when you
+explicitly want to send that context to Claude.
+
+Usage is handled by your Claude Code plan. The companion sets a 15-minute
+timeout by default and does not set a per-call dollar budget unless you pass
+`--max-budget-usd` or MCP `max_budget_usd`.
+
+Optional output redaction is separate from outbound blocking: if Claude quotes
+text that looks like a token or password, the stored result is redacted and kept
+so the job remains inspectable.
+
+The secret-like scan is a conservative heuristic, not a full secret scanner.
+Run your normal secret-scanning tooling before publishing a repository.
 
 ## Requirements
 
 - Codex CLI with plugin and MCP support.
 - Claude Code CLI installed and signed in.
-- Node.js 18.18 or newer.
+- Node.js 20 or newer.
 - Git for diff-based reviews.
+
+## Release And Support
+
+- License: Apache-2.0.
+- Publisher: Anhtai Huynh.
+- GitHub: https://github.com/anhtaiH/claude-code-companion.
+- Security policy: [SECURITY.md](SECURITY.md).
+- Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+- Release checklist: [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## Development
 

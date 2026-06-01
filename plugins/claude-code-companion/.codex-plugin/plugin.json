@@ -1,9 +1,9 @@
 {
   "name": "claude",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Use Claude Code from Codex for review, diagnosis, planning, and research.",
   "author": {
-    "name": "anhtaiH"
+    "name": "Anhtai Huynh"
   },
   "license": "Apache-2.0",
   "keywords": ["claude-code", "review", "multi-agent", "model-diversity"],
@@ -12,8 +12,8 @@
   "interface": {
     "displayName": "Claude Code Companion",
     "shortDescription": "Ask Claude Code for second-model help",
-    "longDescription": "Claude Code Companion lets Codex ask the local Claude Code CLI for review, adversarial review, diagnosis, planning, and research while Codex stays in charge.",
-    "developerName": "anhtaiH",
+    "longDescription": "Claude Code Companion lets Codex ask the local Claude Code CLI for read-only review, adversarial review, diagnosis, planning, and research while Codex stays in charge. It blocks secret-like outbound context by default and does not set a dollar budget unless the user opts in.",
+    "developerName": "Anhtai Huynh",
     "category": "Developer Tools",
     "capabilities": ["Read", "Interactive"],
     "defaultPrompt": [

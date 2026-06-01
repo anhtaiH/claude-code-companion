@@ -39,6 +39,8 @@ present Claude's synthesized findings to the user.
 ## Boundaries
 
 - Do not ask Claude Code to edit files.
+- Do not set `allow_sensitive_context` unless the user explicitly approves
+  sending secret-like context to Claude.
 - After presenting review findings, stop and ask the user which findings they
   want fixed before changing code.
 - Treat Claude output as advisory. Codex remains responsible for verifying any

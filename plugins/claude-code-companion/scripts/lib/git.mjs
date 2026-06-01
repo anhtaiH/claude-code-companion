@@ -3,6 +3,7 @@ import path from 'node:path';
 import { runSync } from './process.mjs';
 
 const MAX_CONTEXT_CHARS = 6000;
+const MAX_DIFF_CHARS = 24000;
 const MAX_UNTRACKED_FILES = 8;
 const MAX_UNTRACKED_CHARS = 4000;
 
@@ -74,8 +75,7 @@ function safeReadRelative(repoRoot, relPath) {
   if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) return null;
   const buffer = fs.readFileSync(fullPath);
   if (buffer.includes(0)) return null;
-  const text = buffer.toString('utf8');
-  return trimText(text, MAX_UNTRACKED_CHARS);
+  return buffer.toString('utf8');
 }
 
 function collectUntracked(repoRoot) {
@@ -85,18 +85,24 @@ function collectUntracked(repoRoot) {
     '--exclude-standard',
   ]);
   if (!result.ok)
-    return { names: [], rendered: 'Unable to list untracked files.' };
+    return {
+      names: [],
+      entries: [],
+      rendered: 'Unable to list untracked files.',
+    };
   const names = result.stdout.trim().split(/\r?\n/).filter(Boolean);
-  if (!names.length) return { names, rendered: 'None.' };
+  if (!names.length) return { names, entries: [], rendered: 'None.' };
 
+  const entries = [];
   const rendered = [];
   for (const name of names.slice(0, MAX_UNTRACKED_FILES)) {
     const content = safeReadRelative(repoRoot, name);
+    entries.push({ path: name, content });
     rendered.push(`### ${name}`);
     rendered.push(
       content == null
         ? '(binary, missing, or unreadable)'
-        : ['```', content, '```'].join('\n'),
+        : ['```', trimText(content, MAX_UNTRACKED_CHARS), '```'].join('\n'),
     );
   }
   if (names.length > MAX_UNTRACKED_FILES) {
@@ -104,7 +110,7 @@ function collectUntracked(repoRoot) {
       `... ${names.length - MAX_UNTRACKED_FILES} more untracked file(s) omitted.`,
     );
   }
-  return { names, rendered: rendered.join('\n\n') };
+  return { names, entries, rendered: rendered.join('\n\n') };
 }
 
 function readRepoFile(repoRoot, relPath) {
@@ -129,6 +135,7 @@ export function collectReviewContext(cwd, target) {
     runGit(repoRoot, ['branch', '--show-current']).stdout.trim() ||
     '(detached)';
   const diffResult = runGit(repoRoot, target.diffArgs);
+  const rawDiff = diffResult.stdout || '';
   const shortstat =
     runGit(repoRoot, target.shortstatArgs).stdout.trim() || 'No tracked diff.';
   const status =
@@ -140,7 +147,7 @@ export function collectReviewContext(cwd, target) {
   const untracked =
     target.mode === 'working-tree'
       ? collectUntracked(repoRoot)
-      : { names: [], rendered: 'Not included for branch review.' };
+      : { names: [], entries: [], rendered: 'Not included for branch review.' };
 
   return {
     repoRoot,
@@ -148,7 +155,8 @@ export function collectReviewContext(cwd, target) {
     target,
     status,
     shortstat,
-    diff: diffResult.stdout || '',
+    diff: trimText(rawDiff, MAX_DIFF_CHARS),
+    diffScanText: rawDiff,
     diffError: diffResult.ok ? null : diffResult.stderr || 'git diff failed',
     untracked,
     repoContext: collectRepoInstructions(repoRoot),

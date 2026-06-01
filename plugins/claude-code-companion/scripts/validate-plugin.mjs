@@ -90,8 +90,8 @@ try {
     'marketplace entry should point at plugin root',
   );
 
-  const server = mcp.mcpServers?.[manifest.name];
-  assert(server, `MCP server ${manifest.name} missing`);
+  const server = mcp.mcpServers?.['claude-code-companion'];
+  assert(server, 'MCP server claude-code-companion missing');
   assert(server.command === 'node', 'MCP server should run through node');
   assert(Array.isArray(server.args), 'MCP server args must be an array');
   for (const arg of server.args) {
