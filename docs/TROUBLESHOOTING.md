@@ -15,6 +15,12 @@ claude auth login
 
 Start a fresh Codex session and run `$claude setup` again.
 
+## `$claude setup` Says Claude Code Is Unsupported
+
+Update Claude Code to `2.1.158` or newer. The companion uses Claude Code flags
+for Opus 1M, max effort, JSON schema output, and read-only subagents that were
+validated against that version line.
+
 ## Review Reports Sensitive-Context Warnings
 
 Sensitive-context warnings mean the companion found heuristic secret-like

@@ -31,6 +31,8 @@ Codex:
   - `task-mpvdzdyf-rgm5wr`: internal workflow research completed.
   - `task-mpvdz3hs-2lhwmz` and `task-mpvdz9s1-u4kgsu`: exposed timeout result
     persistence failure, now covered by tests.
+  - `task-mpvklcco-td1gd1`: release-risk checkpoint focused on install,
+    version, target semantics, and agent-facing UX.
 
 ## Problems Found
 
@@ -49,12 +51,17 @@ Codex:
   persisting a normal failed result.
 - The command/API surface exposed too many details to the human and not enough
   decision guidance to Codex.
+- An already-open Codex session can keep an older MCP schema after reinstall,
+  so fresh-session guidance has to be explicit.
+- Setup did not previously distinguish "Claude is installed" from "Claude is
+  new enough for the companion's default flags."
 
 ## UX Lessons
 
 - Keep one agent-native tool. Multiple low-level tools increase agent planning
   burden.
-- Make target selection obvious: `working_tree`, `branch`, `repo`, or `none`.
+- Make review target selection obvious: `working_tree`, `branch`, or `repo`.
+  Prompt-only tasks omit `target`.
 - Prefer background for substantial work, but make status/result reliable and
   self-describing.
 - Preserve full results. Do not make users recover transcripts for normal runs.
@@ -97,6 +104,19 @@ Codex:
 - Timeout/empty-result task failures persist normal failed results instead of
   crashing during summary generation.
 
+### Iteration 4: Agent UX And Install Reliability
+
+- Codex-facing docs now teach prompt-only tasks to omit `target`; only review
+  calls use `working_tree`, `branch`, or `repo`.
+- Setup reports Claude Code version compatibility and treats versions below
+  `2.1.158` as not ready.
+- The installer checks the Claude Code version before installing, supports
+  `--uninstall`, and only adds a global MCP entry when one is not already
+  registered.
+- Background job lookup can recover by job id after `cwd` drift, and `result`
+  refreshes stale running jobs before returning.
+- The package dry-run excludes tests and fake secret fixtures.
+
 ## Remaining GA Work
 
 ### P0 Before Broad GA
@@ -114,13 +134,6 @@ Codex:
 
 ### P1 UX Polish
 
-- Add a compact human-facing quickstart centered on three prompts:
-  - `$claude setup`
-  - `$claude review this repo`
-  - `$claude diagnose <problem>`
-- Teach the skill to include companion health in summaries by default.
-- Add a short "Codex agent contract" section to the README so future agents use
-  the tool directly instead of asking the human for tool-shape details.
 - Consider a `wait` option for MCP background jobs if Codex app support makes
   polling too manual.
 

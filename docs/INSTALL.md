@@ -3,7 +3,7 @@
 ## Requirements
 
 - Codex CLI with plugin and MCP support.
-- Claude Code CLI installed and signed in.
+- Claude Code CLI `2.1.158` or newer, installed and signed in.
 - Node.js 20 or newer.
 - Git for diff-based review context.
 
@@ -18,6 +18,10 @@ Start a new Codex session after installing, then run:
 ```text
 $claude setup
 ```
+
+Reinstalling updates the files on disk, but an already-open Codex session can
+keep the old MCP schema in memory. Always start a new session after install or
+upgrade.
 
 ## Manual Install
 
@@ -36,7 +40,28 @@ codex mcp add claude-code-companion -- node "<installed-plugin-root>/scripts/mcp
 ## Upgrade
 
 Rerun the installer. It removes the previous plugin and MCP registration before
-installing the current marketplace entry.
+installing the current marketplace entry. The installer uses the plugin MCP
+manifest when Codex exposes it and adds one global `claude-code-companion` MCP
+entry only when needed.
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anhtaiH/claude-code-companion/main/install.sh | bash -s -- --uninstall
+```
+
+Manual equivalent:
+
+```bash
+codex plugin remove claude@claude-code-companion
+codex plugin remove claude-code-companion@claude-code-companion
+codex plugin marketplace remove claude-code-companion
+codex mcp remove claude-code-companion
+codex mcp remove claude
+```
+
+Job state is not removed automatically. It lives under
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-code-companion`.
 
 ## Authentication
 

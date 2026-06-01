@@ -10,6 +10,7 @@ Arguments: $ARGUMENTS
 Call `claude_code` with:
 
 - `action: "delegate"`
+- active workspace `cwd`
 - `kind: "review"`
 - `target: "branch"` when `--base` or `--scope branch` is supplied
 - `target: "repo"` when `--scope repo` is supplied
@@ -17,4 +18,6 @@ Call `claude_code` with:
 - optional `base`, `focus`, `background`, `model`, `effort` and `timeout_ms`
 
 If the job runs in the background, use `/claude:status` and `/claude:result`.
-Present findings before changing files.
+If the human only asked for review, present findings and stop. If this review
+is part of a larger Codex implementation task, verify Claude's findings and
+continue with the requested work.

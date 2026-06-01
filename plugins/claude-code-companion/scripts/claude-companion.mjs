@@ -38,6 +38,7 @@ import {
   appendLogLine,
   ensureStateDir,
   findJob,
+  findIndexedWorkspaceRoot,
   findLatestCompletedTask,
   generateJobId,
   listJobs,
@@ -141,11 +142,20 @@ function buildSetupReport(cwd) {
     : { loggedIn: false, detail: 'Claude Code is not installed.' };
   const nextSteps = [];
   if (!claude.available) nextSteps.push('Install Claude Code and rerun setup.');
+  if (claude.available && claude.supported === false) {
+    nextSteps.push(
+      `Update Claude Code to ${claude.minimumVersion} or newer and rerun setup.`,
+    );
+  }
   if (claude.available && !auth.loggedIn)
     nextSteps.push('Run `claude auth login`.');
 
   return {
-    ready: node.available && claude.available && auth.loggedIn,
+    ready:
+      node.available &&
+      claude.available &&
+      claude.supported !== false &&
+      auth.loggedIn,
     node,
     claude,
     auth,
@@ -154,9 +164,16 @@ function buildSetupReport(cwd) {
     defaults: getClaudeDefaults(),
     policy: {
       timeoutMs: DEFAULT_TIMEOUT_MS,
+      maxBudgetUsd: null,
       sensitiveContext: 'warn',
       strictSensitiveContextFlag: '--strict-sensitive-context',
     },
+    warnings:
+      claude.available && claude.supported === null
+        ? [
+            `Claude Code version could not be parsed from "${claude.detail}". Tested default setup requires ${claude.minimumVersion} or newer.`,
+          ]
+        : [],
     nextSteps,
   };
 }
@@ -230,6 +247,9 @@ function warningForSensitiveContext(findings) {
 }
 
 function buildDiffBlock(context) {
+  if (context.diffError) {
+    return `Git diff failed: ${context.diffError}`;
+  }
   if (!context.diff.trim()) return '(no tracked diff)';
   return ['```diff', context.diff.trimEnd(), '```'].join('\n');
 }
@@ -364,6 +384,7 @@ async function executeReviewRun(request) {
         repoRoot: context.repoRoot,
         branch: context.branch,
         shortstat: context.shortstat,
+        diffError: context.diffError,
         untracked: context.untracked.names,
       },
       claude: {
@@ -445,9 +466,10 @@ function workflowForTaskKind(kind) {
 
 function buildTaskPrompt(cwd, prompt, kind) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const repoContext = collectRepoInstructions(workspaceRoot);
+  const context = collectTaskChangeContext(workspaceRoot);
   return {
-    repoContext,
+    context,
+    repoContext: context.repoContext,
     prompt: [
       'You are Claude Code running as a read-only companion for Codex.',
       'Do not edit files, run mutating commands, or ask for permission bypasses.',
@@ -467,12 +489,71 @@ function buildTaskPrompt(cwd, prompt, kind) {
       '- Include a short verification path when Codex should act on the result.',
       '',
       '## Repository Context',
-      repoContext,
+      context.repoContext,
+      '',
+      '## Current Change Context',
+      context.gitContext,
+      '',
+      '## Tracked Diff',
+      buildDiffBlock(context),
+      '',
+      '## Untracked Files',
+      context.untracked.rendered,
       '',
       '## Task',
       prompt,
     ].join('\n'),
   };
+}
+
+function collectTaskChangeContext(workspaceRoot) {
+  try {
+    const target = resolveReviewTarget(workspaceRoot, { scope: 'auto' });
+    return collectReviewContext(workspaceRoot, target);
+  } catch (error) {
+    return {
+      repoRoot: workspaceRoot,
+      branch: null,
+      target: { mode: 'none', label: 'no git repository' },
+      status: 'Unknown.',
+      shortstat: 'No git repository context.',
+      diff: '',
+      diffScanText: '',
+      diffError: null,
+      untracked: { names: [], entries: [], rendered: 'Not available.' },
+      repoContext: collectRepoInstructions(workspaceRoot),
+      gitContext: `Git context unavailable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
+
+function taskSensitiveSources(task, request) {
+  return [
+    {
+      sourceKind: 'task-prompt',
+      text: request.prompt || DEFAULT_CONTINUE_PROMPT,
+    },
+    {
+      sourceKind: 'repo-instructions',
+      text: task.repoContext,
+    },
+    {
+      sourceKind: 'git-context',
+      text: task.context.gitContext,
+    },
+    {
+      sourceKind: 'tracked-diff',
+      path: task.context.target.label,
+      text: task.context.diffScanText,
+    },
+    ...task.context.untracked.entries.map((entry) => ({
+      sourceKind: 'untracked-file',
+      path: entry.path,
+      text: entry.content,
+    })),
+  ];
 }
 
 async function executeTaskRun(request) {
@@ -483,17 +564,10 @@ async function executeTaskRun(request) {
     request.kind,
   );
   const sensitiveContext = blockSensitiveContext(
-    [
-      {
-        sourceKind: 'task-prompt',
-        text: request.prompt || DEFAULT_CONTINUE_PROMPT,
-      },
-      {
-        sourceKind: 'repo-instructions',
-        text: task.repoContext,
-      },
-    ],
-    { strictSensitiveContext: request.strictSensitiveContext },
+    taskSensitiveSources(task, request),
+    {
+      strictSensitiveContext: request.strictSensitiveContext,
+    },
   );
   const claude = runClaudePrint(workspaceRoot, task.prompt, {
     model: request.model,
@@ -632,6 +706,7 @@ function enqueueBackgroundJob(cwd, job, request, asJson) {
 
   const payload = {
     jobId: job.id,
+    workspaceRoot: job.workspaceRoot,
     title:
       job.jobClass === 'review'
         ? `Claude ${request.reviewName}`
@@ -796,12 +871,19 @@ function refreshRunningJobs(workspaceRoot) {
   }
 }
 
+function resolveWorkspaceForReference(cwd, reference) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  if (!reference) return workspaceRoot;
+  if (findJob(workspaceRoot, reference)) return workspaceRoot;
+  return findIndexedWorkspaceRoot(reference) ?? workspaceRoot;
+}
+
 function handleStatus(argv) {
   const { options, positionals } = parseCommonOptions(argv);
   const cwd = resolveCwd(options);
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  refreshRunningJobs(workspaceRoot);
   const reference = positionals[0] ?? '';
+  const workspaceRoot = resolveWorkspaceForReference(cwd, reference);
+  refreshRunningJobs(workspaceRoot);
   const jobs = reference
     ? [findJob(workspaceRoot, reference)].filter(Boolean)
     : sortJobsNewestFirst(listJobs(workspaceRoot)).slice(
@@ -821,8 +903,9 @@ function handleStatus(argv) {
 function handleResult(argv) {
   const { options, positionals } = parseCommonOptions(argv);
   const cwd = resolveCwd(options);
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const reference = positionals[0] ?? '';
+  const workspaceRoot = resolveWorkspaceForReference(cwd, reference);
+  refreshRunningJobs(workspaceRoot);
   const job =
     (reference
       ? findJob(workspaceRoot, reference)
@@ -840,8 +923,9 @@ function handleResult(argv) {
 function handleCancel(argv) {
   const { options, positionals } = parseCommonOptions(argv);
   const cwd = resolveCwd(options);
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const reference = positionals[0] ?? '';
+  const workspaceRoot = resolveWorkspaceForReference(cwd, reference);
+  refreshRunningJobs(workspaceRoot);
   const job =
     (reference
       ? findJob(workspaceRoot, reference)

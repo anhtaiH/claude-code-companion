@@ -19,11 +19,13 @@ asks for a different tradeoff.
 The primary caller is Codex. Choose sensible tool arguments yourself instead
 of making the human learn the runtime:
 
+- Pass the absolute active workspace root as `cwd` on every MCP call.
+  Lifecycle calls can recover by job id if `cwd` drifts, but stable `cwd`
+  keeps status/result scoped and predictable.
 - Current uncommitted work: `target: "working_tree"`.
 - Branch review against a base ref: `target: "branch"` plus `base`.
 - Full repository review: `target: "repo"`.
-- Diagnosis, planning, and research that do not need a diff target:
-  `target: "none"`.
+- Diagnosis, planning, and research do not need `target`; omit it.
 - Leave `strict_sensitive_context` unset by default. The companion records a
   warning for heuristic secret-like context and continues. Use strict mode only
   when the user explicitly asks for blocking behavior.
@@ -51,8 +53,10 @@ present Claude's synthesized findings to the user.
 ## Boundaries
 
 - Do not ask Claude Code to edit files.
-- After presenting review findings, stop and ask the user which findings they
-  want fixed before changing code.
+- If the human only asked for a review, present findings and stop.
+- If the human asked Codex to implement, fix, or get to done while using Claude
+  as a helper, treat Claude output as advisory input and keep working after you
+  verify it yourself.
 - Treat Claude output as advisory. Codex remains responsible for verifying any
   fix before claiming completion.
 

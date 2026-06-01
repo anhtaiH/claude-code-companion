@@ -12,6 +12,6 @@ Call `claude_code` with:
 - `action: "status"`
 - optional `job_id`
 - optional `all`
-- optional `cwd`
+- active workspace `cwd` unless the user supplied a different one
 
 Show active jobs first and include the job id needed for `/claude:result`.

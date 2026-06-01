@@ -124,6 +124,8 @@ test('plugin manifest installs as claude from the companion marketplace', () => 
     'utf8',
   );
   assert.match(installer, /codex mcp add "\$\{marketplace_name\}"/);
+  assert.match(installer, /min_claude_version="2\.1\.158"/);
+  assert.match(installer, /mcp_registered/);
   assert.match(installer, /\$claude setup/);
 });
 
@@ -157,18 +159,69 @@ test('setup reports ready with fake Claude installed and authenticated', () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ready, true);
   assert.match(payload.claude.detail, /Claude Code/);
+  assert.equal(payload.claude.version, '2.1.158');
+  assert.equal(payload.claude.minimumVersion, '2.1.158');
+  assert.equal(payload.claude.supported, true);
+  assert.equal(payload.claude.compatibility, 'supported');
   assert.equal(payload.auth.loggedIn, true);
   assert.equal(payload.auth.email, undefined);
   assert.equal(payload.auth.orgId, undefined);
   assert.equal(payload.defaults.model, 'opus[1m]');
   assert.equal(payload.defaults.effort, 'max');
   assert.equal(payload.policy.timeoutMs, 30 * 60 * 1000);
+  assert.equal(payload.policy.maxBudgetUsd, null);
   assert.equal(payload.policy.sensitiveContext, 'warn');
   assert.equal(
     payload.policy.strictSensitiveContextFlag,
     '--strict-sensitive-context',
   );
   assert.ok(payload.defaults.subagents.includes('codebase-researcher'));
+});
+
+test('setup reports unsupported Claude Code versions before green readiness', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, {
+    FAKE_CLAUDE_VERSION: '2.0.0 (Claude Code)',
+  });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'setup', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.claude.version, '2.0.0');
+  assert.equal(payload.claude.supported, false);
+  assert.equal(payload.claude.compatibility, 'unsupported');
+  assert.match(payload.nextSteps.join('\n'), /Update Claude Code/);
+});
+
+test('setup warns when Claude Code version output is unparseable', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, {
+    FAKE_CLAUDE_VERSION: 'Claude Code dev build',
+  });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'setup', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ready, true);
+  assert.equal(payload.claude.version, null);
+  assert.equal(payload.claude.supported, null);
+  assert.equal(payload.claude.compatibility, 'unknown');
+  assert.match(payload.warnings.join('\n'), /could not be parsed/);
 });
 
 test('setup reports missing Claude without using real PATH', () => {
@@ -533,6 +586,36 @@ Evidence: plugins/claude-code-companion/scripts/lib/render.mjs:97.
   assert.equal(normalized.parsed.findings[1].severity, 'medium');
 });
 
+test('review parser keeps numbered subheadings inside severity sections', () => {
+  const normalized = normalizeReviewPayload(`
+## HIGH
+
+### H1. Installer hard-aborts on setup output drift
+- File: install.sh:38
+- Evidence: plugin root is parsed from one stdout marker.
+
+### H2. Background results can be orphaned
+- Evidence: plugins/claude-code-companion/scripts/lib/state.mjs:53
+
+## MEDIUM
+
+### M1. Uninstall path is missing
+- Evidence: docs/INSTALL.md:1
+`);
+
+  assert.equal(normalized.parseError, null);
+  assert.equal(normalized.parsed.verdict, 'changes-needed');
+  assert.equal(normalized.parsed.findings.length, 3);
+  assert.equal(normalized.parsed.findings[0].severity, 'high');
+  assert.equal(
+    normalized.parsed.findings[0].title,
+    'Installer hard-aborts on setup output drift',
+  );
+  assert.equal(normalized.parsed.findings[0].file, 'install.sh');
+  assert.equal(normalized.parsed.findings[0].line_start, 38);
+  assert.equal(normalized.parsed.findings[2].severity, 'medium');
+});
+
 test('OpenAI key heuristic avoids English slug false positives', () => {
   assert.equal(
     hasSecretLikeText('hooks/pre-task-confidentiality-check.md'),
@@ -575,6 +658,26 @@ test('review uses assistant transcript when result event is only progress', () =
   assert.equal(payload.review.verdict, 'approve');
   assert.equal(payload.review.summary, 'Assistant transcript carried the final review.');
   assert.equal(payload.parseError, null);
+  assert.equal(payload.claude.resultTextSource, 'assistant-events');
+});
+
+test('review uses final assistant message instead of progress chatter', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'assistant-chatter' });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review.verdict, 'approve');
+  assert.equal(payload.review.summary, 'Final assistant message carried the review.');
+  assert.equal(payload.rawOutput.includes('I will inspect the repo first.'), false);
   assert.equal(payload.claude.resultTextSource, 'assistant-events');
 });
 
@@ -631,6 +734,10 @@ test('task prompts include kind-specific workflow guidance', () => {
   assert.match(stdin, /## Work Mode/);
   assert.match(stdin, /Diagnose mode:/);
   assert.match(stdin, /## Output Contract/);
+  assert.match(stdin, /## Current Change Context/);
+  assert.match(stdin, /Shortstat:/);
+  assert.match(stdin, /## Tracked Diff/);
+  assert.match(stdin, /export const value = items\[0\]\.id;/);
 });
 
 test('resume task keeps the base kind workflow guidance', () => {
@@ -1085,6 +1192,100 @@ test('background task completes and result is fetched without transcript recover
   assert.equal(resultPayload.result.rawOutput, 'Handled task');
 });
 
+test('background result can be fetched by job id after cwd drift', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const otherRepo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const started = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--background', 'inspect', '--json'],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const startPayload = JSON.parse(started.stdout);
+  const jobId = startPayload.jobId;
+  assert.equal(startPayload.workspaceRoot, fs.realpathSync.native(repo));
+
+  let completed = false;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const status = run(
+      process.execPath,
+      [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+      { env },
+    );
+    assert.equal(status.status, 0, status.stderr);
+    if (JSON.parse(status.stdout).jobs[0]?.status === 'completed') {
+      completed = true;
+      break;
+    }
+    sleep(50);
+  }
+  assert.equal(completed, true);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', otherRepo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.workspaceRoot, fs.realpathSync.native(repo));
+  assert.equal(payload.job.id, jobId);
+  assert.equal(payload.result.rawOutput, 'Handled task');
+});
+
+test('result refreshes stale running jobs before returning', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+  const jobId = 'task-test-stale';
+
+  run(process.execPath, [COMPANION, 'setup', '--cwd', repo, '--json'], { env });
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR =
+    env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  try {
+    upsertJob(repo, {
+      id: jobId,
+      workspaceRoot: repo,
+      kind: 'task',
+      jobClass: 'task',
+      status: 'running',
+      phase: 'running',
+      pid: 99999999,
+      summary: 'stale task',
+    });
+    writeJobFile(repo, jobId, {
+      id: jobId,
+      workspaceRoot: repo,
+      kind: 'task',
+      jobClass: 'task',
+      status: 'running',
+      phase: 'running',
+      pid: 99999999,
+      summary: 'stale task',
+    });
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.status, 'failed');
+  assert.equal(payload.job.errorMessage, 'Worker process is no longer running.');
+});
+
 test('job state keeps only the latest fifty jobs', () => {
   const workspace = makeTempDir();
   const stateDir = makeTempDir();
@@ -1224,6 +1425,12 @@ test('MCP server exposes exactly one agent-native tool and prompt templates', ()
       'repo',
     ),
   );
+  assert.equal(
+    responses[1].result.tools[0].inputSchema.properties.target.enum.includes(
+      'none',
+    ),
+    false,
+  );
   assert.deepEqual(
     responses[1].result.tools[0].inputSchema.properties.kind.enum,
     EXPECTED_KINDS,
@@ -1235,6 +1442,41 @@ test('MCP server exposes exactly one agent-native tool and prompt templates', ()
     responses[3].result.messages[0].content.text.includes('max_budget_usd'),
     false,
   );
+  assert.ok(
+    responses[3].result.messages[0].content.text.includes(
+      'active workspace `cwd`',
+    ),
+  );
+});
+
+test('MCP setup infers workspace from session PWD when cwd is omitted', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: { action: 'setup' },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], {
+    cwd: PLUGIN_ROOT,
+    env: buildEnv(binDir, { PWD: repo }),
+    input,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout.trim());
+  const payload = JSON.parse(response.result.content[0].text);
+  assert.equal(payload.workspaceRoot, fs.realpathSync.native(repo));
 });
 
 test('MCP claude_code delegate action routes to fake Claude review', () => {
@@ -1467,9 +1709,9 @@ test('MCP claude_code delegate action supports every advertised kind', () => {
           action: 'delegate',
           kind,
           cwd: repo,
-          target: ['review', 'adversarial_review'].includes(kind)
-            ? 'working_tree'
-            : 'none',
+          ...(['review', 'adversarial_review'].includes(kind)
+            ? { target: 'working_tree' }
+            : {}),
           prompt: `Exercise ${kind}.`,
         },
       },

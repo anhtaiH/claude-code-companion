@@ -58,7 +58,7 @@ const fs = require('node:fs');
 const args = process.argv.slice(2);
 const mode = process.env.FAKE_CLAUDE_MODE || 'ok';
 if (args.includes('--version')) {
-  console.log('2.1.158 (Claude Code)');
+  console.log(process.env.FAKE_CLAUDE_VERSION || '2.1.158 (Claude Code)');
   process.exit(0);
 }
 if (args[0] === 'auth' && args[1] === 'status') {
@@ -150,6 +150,40 @@ if (mode === 'assistant-final') {
     duration_ms: 1,
     result: 'Release-risk specialist completed; waiting for final synthesis.',
     session_id: 'fake-session-assistant-final',
+    total_cost_usd: 0.001,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    modelUsage: { fake: { inputTokens: 1, outputTokens: 1, costUSD: 0.001 } },
+    terminal_reason: 'completed'
+  }));
+  process.exit(0);
+}
+if (mode === 'assistant-chatter') {
+  console.log(JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'I will inspect the repo first.' }]
+    }
+  }));
+  console.log(JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: JSON.stringify({
+        verdict: 'approve',
+        summary: 'Final assistant message carried the review.',
+        findings: [],
+        next_steps: []
+      }) }]
+    }
+  }));
+  console.log(JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    duration_ms: 1,
+    result: '…',
+    session_id: 'fake-session-assistant-chatter',
     total_cost_usd: 0.001,
     usage: { input_tokens: 1, output_tokens: 1 },
     modelUsage: { fake: { inputTokens: 1, outputTokens: 1, costUSD: 0.001 } },

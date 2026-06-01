@@ -10,6 +10,7 @@ Arguments: $ARGUMENTS
 Call `claude_code` with:
 
 - `action: "delegate"`
+- active workspace `cwd`
 - `kind: "refactor_plan"`
 - `prompt` from the remaining arguments
 - optional `focus`, `background`, `resume_last`, `fresh`, `model`, `effort` and `timeout_ms`

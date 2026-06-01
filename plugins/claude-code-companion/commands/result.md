@@ -11,6 +11,6 @@ Call `claude_code` with:
 
 - `action: "result"`
 - optional `job_id`
-- optional `cwd`
+- active workspace `cwd` unless the user supplied a different one
 
 Present the stored result, Claude session id, and any actionable findings.

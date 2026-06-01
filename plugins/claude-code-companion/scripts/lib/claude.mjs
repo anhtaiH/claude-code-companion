@@ -9,12 +9,35 @@ const READ_ONLY_ALLOWED_TOOLS =
 const WRITE_TOOLS = /\b(?:Edit|Write)\b/;
 const DEFAULT_MODEL = 'opus[1m]';
 const DEFAULT_EFFORT = 'max';
+const MIN_CLAUDE_CODE_VERSION = '2.1.158';
 const AGENT_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
 const AGENT_DISALLOWED_TOOLS = ['Edit', 'Write'];
 export { hasSecretLikeText };
 
 export function getClaudeAvailability(cwd) {
-  return binaryAvailable('claude', ['--version'], { cwd });
+  const availability = binaryAvailable('claude', ['--version'], { cwd });
+  if (!availability.available) {
+    return {
+      ...availability,
+      version: null,
+      minimumVersion: MIN_CLAUDE_CODE_VERSION,
+      supported: false,
+      compatibility: 'missing',
+    };
+  }
+
+  const version = parseClaudeVersion(availability.detail);
+  const supported = version
+    ? compareVersions(version, MIN_CLAUDE_CODE_VERSION) >= 0
+    : null;
+  return {
+    ...availability,
+    version,
+    minimumVersion: MIN_CLAUDE_CODE_VERSION,
+    supported,
+    compatibility:
+      supported === null ? 'unknown' : supported ? 'supported' : 'unsupported',
+  };
 }
 
 export function getClaudeDefaults() {
@@ -27,6 +50,21 @@ export function getClaudeDefaults() {
     allowedTools: READ_ONLY_ALLOWED_TOOLS,
     disallowedTools: 'Edit,Write',
   };
+}
+
+function parseClaudeVersion(value) {
+  const match = String(value ?? '').match(/\b(\d+)\.(\d+)\.(\d+)\b/);
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : null;
+}
+
+function compareVersions(left, right) {
+  const leftParts = String(left).split('.').map((part) => Number(part));
+  const rightParts = String(right).split('.').map((part) => Number(part));
+  for (let index = 0; index < 3; index += 1) {
+    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (diff) return diff;
+  }
+  return 0;
 }
 
 export function getClaudeAuthStatus(cwd) {
@@ -209,7 +247,13 @@ function validateClaudeArgs(args) {
 function parseClaudeOutput(stdout) {
   const text = stdout.trim();
   if (!text) {
-    return { raw: null, parseError: null, eventCount: 0, assistantText: '' };
+    return {
+      raw: null,
+      parseError: null,
+      eventCount: 0,
+      assistantText: '',
+      finalAssistantText: '',
+    };
   }
 
   try {
@@ -219,6 +263,7 @@ function parseClaudeOutput(stdout) {
       parseError: null,
       eventCount: 1,
       assistantText: assistantTextFromEvents([raw]),
+      finalAssistantText: finalAssistantTextFromEvents([raw]),
     };
   } catch (error) {
     const events = [];
@@ -232,6 +277,7 @@ function parseClaudeOutput(stdout) {
           parseError: error.message,
           eventCount: events.length,
           assistantText: assistantTextFromEvents(events),
+          finalAssistantText: finalAssistantTextFromEvents(events),
         };
       }
     }
@@ -241,12 +287,23 @@ function parseClaudeOutput(stdout) {
       parseError: result ? null : error.message,
       eventCount: events.length,
       assistantText: assistantTextFromEvents(events),
+      finalAssistantText: finalAssistantTextFromEvents(events),
     };
   }
 }
 
+function assistantMessagesFromEvents(events) {
+  return events
+    .map((event) => textFragmentsFromEvent(event).join('\n\n').trim())
+    .filter(Boolean);
+}
+
 function assistantTextFromEvents(events) {
-  return events.flatMap((event) => textFragmentsFromEvent(event)).join('\n\n');
+  return assistantMessagesFromEvents(events).join('\n\n');
+}
+
+function finalAssistantTextFromEvents(events) {
+  return assistantMessagesFromEvents(events).at(-1) ?? '';
 }
 
 function textFragmentsFromEvent(event) {
@@ -256,6 +313,12 @@ function textFragmentsFromEvent(event) {
   return content
     .map((entry) => (entry?.type === 'text' ? entry.text : null))
     .filter((entry) => typeof entry === 'string' && entry.trim());
+}
+
+function isProgressOnlyResultText(value) {
+  return /(?:completed; waiting for final synthesis|waiting for final synthesis|specialist completed)/i.test(
+    String(value ?? ''),
+  );
 }
 
 export function runClaudePrint(cwd, prompt, options = {}) {
@@ -296,10 +359,14 @@ export function runClaudePrint(cwd, prompt, options = {}) {
         ? ''
         : JSON.stringify(raw.result);
   const assistantText = parsed.assistantText.trim();
+  const finalAssistantText = parsed.finalAssistantText.trim();
   const resultText =
-    assistantText.length > rawResultText.trim().length
-      ? assistantText
-      : rawResultText;
+    finalAssistantText &&
+    (rawResultText.trim().length <= 1 ||
+      isProgressOnlyResultText(rawResultText) ||
+      finalAssistantText.length > rawResultText.trim().length * 2)
+      ? finalAssistantText
+      : rawResultText || finalAssistantText || assistantText;
 
   return {
     ok: result.ok && raw != null,
@@ -311,7 +378,7 @@ export function runClaudePrint(cwd, prompt, options = {}) {
     eventCount: parsed.eventCount,
     resultText,
     resultTextSource:
-      resultText === assistantText && assistantText
+      resultText === finalAssistantText && finalAssistantText
         ? 'assistant-events'
         : 'result-event',
     sessionId: raw?.session_id ?? null,
@@ -587,6 +654,10 @@ function sectionBySeverity(text) {
   for (const line of String(text).split(/\r?\n/)) {
     const heading = parseReviewHeading(line);
     if (heading) {
+      if (!heading.severity && currentSeverity && isFindingSubheading(line)) {
+        appendSectionLine(sectionLines, currentSeverity, line);
+        continue;
+      }
       currentSeverity = heading.severity;
       if (currentSeverity && heading.remainder) {
         appendSectionLine(sectionLines, currentSeverity, heading.remainder);
@@ -651,17 +722,42 @@ function isNonSeverityReviewHeading(value) {
   );
 }
 
+function isFindingSubheading(line) {
+  const text = String(line ?? '').trim().replace(/^#{2,6}\s+/, '');
+  return /^(?:[CHML]\d+|Finding\s+\d+)\b[.: -]/i.test(text);
+}
+
+function cleanFindingHeading(line) {
+  return String(line ?? '')
+    .trim()
+    .replace(/^#{2,6}\s+/, '')
+    .replace(/^\*\*|\*\*$/g, '')
+    .replace(/^[CHML]\d+\s*[.: -]\s*/i, '')
+    .trim();
+}
+
 function findingChunks(section) {
   const lines = String(section).split(/\r?\n/);
   const chunks = [];
   const proseLines = [];
   let current = null;
+  const hasFindingSubheadings = lines.some((line) => isFindingSubheading(line));
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (isFindingSubheading(trimmed)) {
+      if (current) chunks.push(current.join('\n').trim());
+      current = [cleanFindingHeading(trimmed)];
+      continue;
+    }
     const bullet = trimmed.match(/^[-*]\s+(.*)$/);
     if (bullet) {
+      if (hasFindingSubheadings) {
+        if (current) current.push(trimmed);
+        else proseLines.push(trimmed);
+        continue;
+      }
       if (current) chunks.push(current.join('\n').trim());
       current = [bullet[1].trim()];
       continue;
@@ -696,6 +792,8 @@ function isNoFindingValue(value) {
 function titleFromText(value) {
   return String(value ?? '')
     .split(/\r?\n|\. /)[0]
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^[CHML]\d+\s*[.: -]\s*/i, '')
     .replace(/^`?([^`:]+)`?:\s*/, '$1: ')
     .slice(0, 120)
     .trim() || 'Finding';

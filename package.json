@@ -28,7 +28,6 @@
   "files": [
     ".agents/plugins/marketplace.json",
     "plugins/claude-code-companion/",
-    "tests/",
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",

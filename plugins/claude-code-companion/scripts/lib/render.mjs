@@ -50,9 +50,14 @@ export function renderSetup(report) {
     `- default model: ${report.defaults.model}`,
     `- default effort: ${report.defaults.effort}`,
     `- default timeout: ${Math.round((report.policy?.timeoutMs ?? 0) / 60000)} minutes`,
+    '- default dollar budget: none',
     `- sensitive context: ${report.policy?.sensitiveContext ?? 'warn'}`,
+    `- Claude Code compatibility: ${report.claude.compatibility ?? 'unknown'} (minimum ${report.claude.minimumVersion ?? 'unknown'})`,
     `- subagents: ${report.defaults.subagents.join(', ')}`,
   ];
+  if (report.warnings?.length) {
+    lines.push('', 'Warnings:', ...report.warnings.map((warning) => `- ${warning}`));
+  }
   if (report.nextSteps.length) {
     lines.push(
       '',
@@ -103,7 +108,8 @@ export function renderTaskResult(result) {
 }
 
 export function renderQueued(payload) {
-  return `${payload.title} started as ${payload.jobId}. Check status with the claude_code tool using action "status".\n`;
+  const workspace = payload.workspaceRoot ? ` Workspace: ${payload.workspaceRoot}.` : '';
+  return `${payload.title} started as ${payload.jobId}.${workspace} Check status with the claude_code tool using action "status".\n`;
 }
 
 export function renderStatus(report) {

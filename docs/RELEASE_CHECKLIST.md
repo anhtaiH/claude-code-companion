@@ -6,8 +6,15 @@ Use this checklist before tagging a public release.
 
 - [ ] `npm run check`
 - [ ] `npm pack --dry-run`
+- [ ] `npm pack --dry-run` contents reviewed; no unintended test fixtures or
+  fake secrets ship in the archive.
 - [ ] Plugin manifest validation passes.
 - [ ] MCP initialize, tools/list, and tools/call smoke passes.
+- [ ] `$claude setup` reports Claude Code `2.1.158` or newer as supported and
+  older fake versions as not ready in tests.
+- [ ] Installer can run twice in a row without leaving duplicate or stale MCP
+  entries.
+- [ ] Uninstall path is documented and smoke-tested.
 - [ ] No live tracked secret-like content is present outside intentional test
   fixtures.
 
@@ -19,6 +26,8 @@ Use this checklist before tagging a public release.
   sensitive-context mode enabled.
 - [ ] A background adversarial review completes through normal `status` and
   `result` calls.
+- [ ] A background job can be fetched by job id even if the agent omits or
+  changes `cwd` on the result call.
 - [ ] The final adversarial review of this repo is reviewed and each finding is
   fixed or explicitly deferred.
 - [ ] `docs/GA_POLISH_PLAN.md` is current with dogfood findings and release

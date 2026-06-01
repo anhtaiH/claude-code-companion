@@ -17,12 +17,17 @@ Then ask Codex:
 
 ```text
 $claude setup
+$claude review this repo
 ```
 
 If Claude Code is not signed in, run `claude auth login` and rerun the
 installer.
 
 More detail: [docs/INSTALL.md](docs/INSTALL.md).
+
+Updating or reinstalling changes the MCP tool schema only for new Codex
+sessions. After an update, start a fresh Codex session before judging the
+tool surface.
 
 ## Usage
 
@@ -106,10 +111,27 @@ so the job remains inspectable.
 The secret-like scan is a conservative heuristic, not a full secret scanner.
 Run your normal secret-scanning tooling before publishing a repository.
 
+## Codex Agent Contract
+
+Codex agents should use this as one high-level helper, not as a set of shell
+commands for the human to operate:
+
+- Call `setup` when readiness is unknown.
+- Pass the active workspace root as `cwd` on every MCP call.
+- Use `working_tree` for current changes, `branch` plus `base` for branch
+  review, and `repo` for full-repository review.
+- Omit `target` for prompt-only diagnosis, planning, research, and focused
+  advisory tasks.
+- Start substantial work in the background, poll `status`, then fetch `result`.
+- Include the Claude session id, model, parser status, target label, warnings,
+  and whether raw output was preserved when summarizing results.
+- Keep implementation and final judgment in Codex. Claude is advisory unless
+  the human explicitly switches tools.
+
 ## Requirements
 
 - Codex CLI with plugin and MCP support.
-- Claude Code CLI installed and signed in.
+- Claude Code CLI `2.1.158` or newer, installed and signed in.
 - Node.js 20 or newer.
 - Git for diff-based reviews.
 

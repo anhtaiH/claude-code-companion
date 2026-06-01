@@ -7,6 +7,7 @@ import { nowIso } from './process.mjs';
 const STATE_VERSION = 1;
 const MAX_JOBS = 50;
 const JOB_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/;
+const JOB_INDEX_FILE = 'job-index.json';
 
 function canonicalPath(value) {
   const resolved = path.resolve(value);
@@ -63,6 +64,10 @@ export function resolveStateFile(workspaceRoot) {
   return path.join(resolveStateDir(workspaceRoot), 'state.json');
 }
 
+export function resolveJobIndexFile() {
+  return path.join(resolveStateRoot(), JOB_INDEX_FILE);
+}
+
 export function resolveJobsDir(workspaceRoot) {
   return path.join(resolveStateDir(workspaceRoot), 'jobs');
 }
@@ -106,6 +111,61 @@ function writeFileAtomic(filePath, content) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tempPath, content);
   fs.renameSync(tempPath, filePath);
+}
+
+function loadJobIndex() {
+  const parsed = readJsonFile(resolveJobIndexFile(), null);
+  if (!parsed || typeof parsed !== 'object') {
+    return { version: STATE_VERSION, jobs: {} };
+  }
+  return {
+    version: STATE_VERSION,
+    jobs:
+      parsed.jobs && typeof parsed.jobs === 'object' && !Array.isArray(parsed.jobs)
+        ? parsed.jobs
+        : {},
+  };
+}
+
+function saveJobIndex(index) {
+  const entries = Object.entries(index.jobs ?? {})
+    .sort((left, right) =>
+      String(right[1]?.updatedAt ?? '').localeCompare(
+        String(left[1]?.updatedAt ?? ''),
+      ),
+    )
+    .slice(0, MAX_JOBS * 20);
+  writeFileAtomic(
+    resolveJobIndexFile(),
+    `${JSON.stringify(
+      { version: STATE_VERSION, jobs: Object.fromEntries(entries) },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+function indexJob(workspaceRoot, jobId) {
+  assertValidJobId(jobId);
+  const index = loadJobIndex();
+  index.jobs[jobId] = {
+    workspaceRoot: canonicalPath(workspaceRoot),
+    stateDir: resolveStateDir(workspaceRoot),
+    updatedAt: nowIso(),
+  };
+  saveJobIndex(index);
+}
+
+export function findIndexedWorkspaceRoot(jobId) {
+  try {
+    assertValidJobId(jobId);
+  } catch {
+    return null;
+  }
+  const entry = loadJobIndex().jobs?.[jobId];
+  return typeof entry?.workspaceRoot === 'string'
+    ? entry.workspaceRoot
+    : null;
 }
 
 export function loadState(workspaceRoot) {
@@ -152,6 +212,7 @@ export function generateJobId(prefix = 'job') {
 }
 
 export function upsertJob(workspaceRoot, patch) {
+  indexJob(workspaceRoot, patch.id);
   return updateState(workspaceRoot, (state) => {
     const at = nowIso();
     const index = state.jobs.findIndex((job) => job.id === patch.id);
@@ -185,6 +246,7 @@ export function sortJobsNewestFirst(jobs) {
 
 export function writeJobFile(workspaceRoot, jobId, payload) {
   ensureStateDir(workspaceRoot);
+  indexJob(workspaceRoot, jobId);
   const filePath = resolveJobFile(workspaceRoot, jobId);
   writeFileAtomic(filePath, `${JSON.stringify(payload, null, 2)}\n`);
   return filePath;
@@ -197,6 +259,7 @@ export function readJobFile(workspaceRoot, jobId) {
 
 export function writeResultFile(workspaceRoot, jobId, payload) {
   ensureStateDir(workspaceRoot);
+  indexJob(workspaceRoot, jobId);
   const filePath = resolveJobResultFile(workspaceRoot, jobId);
   writeFileAtomic(filePath, `${JSON.stringify(payload, null, 2)}\n`);
   return filePath;

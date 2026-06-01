@@ -148,7 +148,14 @@ export function collectReviewContext(cwd, target) {
     : { ok: true, stdout: '', stderr: '' };
   const rawDiff = diffResult.stdout || '';
   const shortstat = target.shortstatArgs
-    ? runGit(repoRoot, target.shortstatArgs).stdout.trim() || 'No tracked diff.'
+    ? (() => {
+        const result = runGit(repoRoot, target.shortstatArgs);
+        if (!result.ok)
+          return `Unable to compute diff shortstat: ${
+            result.stderr || 'git diff --shortstat failed'
+          }`;
+        return result.stdout.trim() || 'No tracked diff.';
+      })()
     : 'Repository review requested; no diff target.';
   const status =
     runGit(repoRoot, [
@@ -183,6 +190,11 @@ export function collectReviewContext(cwd, target) {
       `Branch: ${branch}`,
       `Status:\n${status}`,
       `Shortstat: ${shortstat}`,
-    ].join('\n\n'),
+      diffResult.ok
+        ? null
+        : `Diff error: ${diffResult.stderr || 'git diff failed'}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
   };
 }

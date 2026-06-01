@@ -11,6 +11,6 @@ Call `claude_code` with:
 
 - `action: "cancel"`
 - `job_id` when supplied
-- optional `cwd`
+- active workspace `cwd` unless the user supplied a different one
 
 Report whether a running job was cancelled.

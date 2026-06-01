@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const COMPANION = path.join(SCRIPT_DIR, 'claude-companion.mjs');
+const PLUGIN_ROOT = path.resolve(SCRIPT_DIR, '..');
 const TASK_KIND_PROMPTS = {
   diagnose:
     'Diagnose the likely root cause. Use repo context and read-only inspection where helpful.',
@@ -73,13 +74,13 @@ const tools = [
         cwd: {
           type: 'string',
           description:
-            'Workspace root. Defaults to the MCP server process working directory.',
+            'Absolute workspace root. Codex agents should pass this on every action; if omitted, the server infers it from the active session environment.',
         },
         target: {
           type: 'string',
-          enum: ['working_tree', 'branch', 'repo', 'none'],
+          enum: ['working_tree', 'branch', 'repo'],
           description:
-            'Delegation target. Use working_tree for uncommitted changes, branch with base for base...HEAD, repo for full-repository review, and none for prompt-only diagnosis, planning, or research.',
+            'Review target. Use working_tree for uncommitted changes, branch with base for base...HEAD, or repo for full-repository review. Omit target for diagnosis, planning, research, and other prompt-only tasks.',
         },
         base: {
           type: 'string',
@@ -218,6 +219,40 @@ function pushArg(args, name, value) {
   args.push(`--${name}`, String(value));
 }
 
+function gitRoot(candidate) {
+  if (!candidate) return null;
+  const result = spawnSync(
+    'git',
+    ['-C', path.resolve(candidate), 'rev-parse', '--show-toplevel'],
+    { encoding: 'utf8' },
+  );
+  if ((result.status ?? 1) !== 0) return null;
+  return result.stdout.trim() ? path.resolve(result.stdout.trim()) : null;
+}
+
+function inferWorkspaceCwd(input = {}) {
+  if (input.cwd) return path.resolve(input.cwd);
+  const candidates = [
+    process.env.CODEX_WORKSPACE_ROOT,
+    process.env.CODEX_PROJECT_DIR,
+    process.env.CLAUDE_PROJECT_DIR,
+    process.env.PWD,
+    process.cwd(),
+  ];
+  for (const candidate of candidates) {
+    const root = gitRoot(candidate);
+    if (root && root !== PLUGIN_ROOT) return root;
+  }
+  return process.cwd();
+}
+
+function withResolvedCwd(input = {}) {
+  return {
+    ...input,
+    cwd: inferWorkspaceCwd(input),
+  };
+}
+
 function rejectDangerousInput(input = {}) {
   const found = DANGEROUS_INPUT_KEYS.filter((key) =>
     Object.hasOwn(input, key),
@@ -340,8 +375,9 @@ function callTool(name, input = {}) {
   }
 
   try {
-    const result = spawnSync(process.execPath, companionArgs(input), {
-      cwd: input.cwd ? path.resolve(input.cwd) : process.cwd(),
+    const resolvedInput = withResolvedCwd(input);
+    const result = spawnSync(process.execPath, companionArgs(resolvedInput), {
+      cwd: resolvedInput.cwd,
       env: process.env,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
@@ -378,7 +414,7 @@ function promptText(name, input = {}) {
   if (name === 'claude_review') {
     return [
       'Stay in this Codex session and delegate a read-only second-model review to Claude Code.',
-      'Call the single `claude_code` tool with `action: "delegate"`, `kind: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
+      'Call the single `claude_code` tool with `action: "delegate"`, the active workspace `cwd`, `kind: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
       'For a full-repository review, use `target: "repo"`.',
       'Leave `strict_sensitive_context` unset unless the user explicitly wants heuristic secret-like context to block the run.',
       input.focus ? `Focus on: ${input.focus}.` : '',
@@ -391,7 +427,7 @@ function promptText(name, input = {}) {
   if (name === 'claude_adversarial_review') {
     return [
       'Stay in this Codex session and delegate a skeptical, read-only challenge review to Claude Code.',
-      'Call the single `claude_code` tool with `action: "delegate"`, `kind: "adversarial_review"`, and `background: true` unless the target is tiny.',
+      'Call the single `claude_code` tool with `action: "delegate"`, the active workspace `cwd`, `kind: "adversarial_review"`, and `background: true` unless the target is tiny.',
       input.base
         ? `Use target "branch" with base ref ${input.base}.`
         : 'Use target "working_tree" unless the user names a base branch.',
@@ -408,7 +444,7 @@ function promptText(name, input = {}) {
   if (name === 'claude_diagnose') {
     return [
       'Stay in this Codex session and delegate read-only diagnosis to Claude Code.',
-      'Call the single `claude_code` tool with `action: "delegate"` and `kind: "diagnose"`.',
+      'Call the single `claude_code` tool with `action: "delegate"`, the active workspace `cwd`, and `kind: "diagnose"`.',
       `Problem: ${input.problem ?? '<describe the failing behavior>'}`,
       'Summarize Claude findings, include the session id, and verify before editing.',
     ]
@@ -419,7 +455,7 @@ function promptText(name, input = {}) {
   if (name === 'claude_plan') {
     return [
       'Stay in this Codex session and delegate a read-only planning pass to Claude Code.',
-      'Call the single `claude_code` tool with `action: "delegate"` and `kind: "plan"`.',
+      'Call the single `claude_code` tool with `action: "delegate"`, the active workspace `cwd`, and `kind: "plan"`.',
       `Goal: ${input.goal ?? '<describe the implementation or verification goal>'}`,
       'Use the plan as advisory input. Codex owns the final implementation and verification.',
     ]
