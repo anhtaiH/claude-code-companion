@@ -11,6 +11,15 @@ const DEFAULT_MODEL = 'opus[1m]';
 const DEFAULT_EFFORT = 'max';
 const MIN_CLAUDE_CODE_VERSION = '2.1.158';
 const AGENT_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
+const AGENT_ALLOWED_TOOLS = [
+  'Read',
+  'Glob',
+  'Grep',
+  'Bash(git status:*)',
+  'Bash(git diff:*)',
+  'Bash(git log:*)',
+  'Bash(git show:*)',
+];
 const AGENT_DISALLOWED_TOOLS = ['Edit', 'Write'];
 export { hasSecretLikeText };
 
@@ -128,6 +137,7 @@ function companionAgent(prompt, description, extra = {}) {
       'Return concise findings with file paths and concrete evidence.',
     ].join('\n'),
     tools: AGENT_TOOLS,
+    allowedTools: AGENT_ALLOWED_TOOLS,
     disallowedTools: AGENT_DISALLOWED_TOOLS,
     model: DEFAULT_MODEL,
     effort: DEFAULT_EFFORT,

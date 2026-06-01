@@ -53,11 +53,6 @@ version_ge() {
   (( left_patch >= right_patch ))
 }
 
-mcp_registered() {
-  codex mcp list 2>/dev/null |
-    awk -v name="${marketplace_name}" '$1 == name { found = 1 } END { exit found ? 0 : 1 }'
-}
-
 case "${1:-}" in
   -h|--help)
     usage
@@ -121,9 +116,8 @@ if [[ -z "${plugin_root}" || ! -f "${plugin_root}/scripts/mcp-server.mjs" ]]; th
   printf 'Warning: could not locate installed plugin root for MCP registration.\n' >&2
   printf 'The $claude skill was installed. Start a new Codex session and run `$claude setup`.\n' >&2
   printf 'If the MCP tool is missing, reinstall after updating Codex or register it manually from the installed plugin root.\n' >&2
-elif mcp_registered; then
-  printf 'MCP server already registered as %s.\n' "${marketplace_name}"
 else
+  codex mcp remove "${marketplace_name}" >/dev/null 2>&1 || true
   if ! codex mcp add "${marketplace_name}" -- node "${plugin_root}/scripts/mcp-server.mjs"; then
     printf 'Warning: MCP registration failed. The $claude skill fallback can still run the companion script.\n' >&2
   fi

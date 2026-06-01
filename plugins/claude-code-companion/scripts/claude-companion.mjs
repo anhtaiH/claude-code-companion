@@ -304,6 +304,57 @@ function fallbackReview(summary) {
   };
 }
 
+function exceptionFailurePayload(job, request, errorMessage) {
+  if (job.jobClass === 'review') {
+    return {
+      reviewName: request.reviewName ?? 'Review',
+      targetLabel: request.summary ?? 'review',
+      sessionId: null,
+      review: fallbackReview(
+        `Claude ${job.kind} failed before producing a result: ${errorMessage}`,
+      ),
+      parseError: null,
+      rawOutput: errorMessage,
+      warnings: [],
+      companion: {
+        resultKind: 'failed-review',
+        rawOutput: 'preserved',
+        targetScope: request.scope ?? null,
+        targetLabel: request.summary ?? null,
+        parser: 'not-run',
+        parseError: null,
+        sensitiveContext: 'unknown',
+        model: null,
+      },
+    };
+  }
+
+  return {
+    rawOutput: errorMessage,
+    sessionId: null,
+    companion: {
+      resultKind: 'failed-task',
+      rawOutput: 'preserved',
+      sensitiveContext: 'unknown',
+      model: null,
+      resultTextSource: 'exception',
+    },
+    claude: {
+      status: 1,
+      error: errorMessage,
+      stderr: '',
+      totalCostUsd: null,
+      usage: null,
+      modelUsage: null,
+      effectiveModels: [],
+      eventCount: 0,
+      terminalReason: 'exception',
+      resultTextSource: 'exception',
+    },
+    warnings: [],
+  };
+}
+
 function effectiveModelName(claude) {
   if (!Array.isArray(claude.effectiveModels)) return null;
   return claude.effectiveModels[0] ?? null;
@@ -656,17 +707,26 @@ async function runForegroundJob(job, request, runner, asJson) {
     if (execution.exitStatus !== 0) process.exitCode = execution.exitStatus;
     return execution;
   } catch (error) {
+    const errorMessage = redactSecretLikeText(
+      error instanceof Error ? error.message : String(error),
+    );
+    const resultFile = safePersistResult(
+      job.workspaceRoot,
+      job.id,
+      exceptionFailurePayload(job, request, errorMessage),
+    );
     const next = {
       ...running,
       status: 'failed',
       phase: 'failed',
       pid: null,
-      errorMessage: redactSecretLikeText(error.message),
+      errorMessage,
+      resultFile,
       completedAt: nowIso(),
     };
     upsertJob(job.workspaceRoot, next);
     writeJobFile(job.workspaceRoot, job.id, next);
-    appendLogLine(job.logFile, `Failed: ${redactSecretLikeText(error.message)}`);
+    appendLogLine(job.logFile, `Failed: ${errorMessage}`);
     throw error;
   }
 }

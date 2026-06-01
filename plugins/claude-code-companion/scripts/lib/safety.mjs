@@ -8,6 +8,38 @@ const SENSITIVE_PATTERNS = [
     pattern: /AKIA[0-9A-Z]{16}/g,
   },
   {
+    category: 'github-token',
+    pattern: /(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})/g,
+  },
+  {
+    category: 'slack-token',
+    pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/g,
+  },
+  {
+    category: 'google-api-key',
+    pattern: /AIza[0-9A-Za-z_-]{30,}/g,
+  },
+  {
+    category: 'stripe-secret-key',
+    pattern: /(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}/g,
+  },
+  {
+    category: 'sendgrid-api-key',
+    pattern: /SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,
+  },
+  {
+    category: 'npm-token',
+    pattern: /npm_[A-Za-z0-9]{20,}/g,
+  },
+  {
+    category: 'jwt',
+    pattern: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+  },
+  {
+    category: 'database-url',
+    pattern: /postgres(?:ql)?:\/\/[^:\s]+:[^@\s]+@[^/\s]+\/[^\s]+/g,
+  },
+  {
     category: 'private-key',
     pattern:
       /-----BEGIN (?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY-----/g,
@@ -23,6 +55,16 @@ const SENSITIVE_PATTERNS = [
   {
     category: 'token-assignment',
     pattern: /^\s*token\s*=\s*\S+/gim,
+  },
+  {
+    category: 'env-secret-assignment',
+    pattern:
+      /^\s*(?:export\s+)?[A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET|API_KEY|ACCESS_KEY)[A-Z0-9_]*\s*=\s*\S{8,}/gim,
+  },
+  {
+    category: 'json-secret-assignment',
+    pattern:
+      /["'](?:password|secret|token|api[_-]?key|access[_-]?token)["']\s*:\s*["'][^"']{8,}["']/gim,
   },
 ];
 

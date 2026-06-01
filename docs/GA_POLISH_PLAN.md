@@ -111,11 +111,25 @@ Codex:
 - Setup reports Claude Code version compatibility and treats versions below
   `2.1.158` as not ready.
 - The installer checks the Claude Code version before installing, supports
-  `--uninstall`, and only adds a global MCP entry when one is not already
-  registered.
+  `--uninstall`, and replaces manifest-created MCP entries with an absolute
+  installed-cache command.
 - Background job lookup can recover by job id after `cwd` drift, and `result`
   refreshes stale running jobs before returning.
 - The package dry-run excludes tests and fake secret fixtures.
+
+### Iteration 5: Final Dogfood Findings
+
+- Installed repo-wide adversarial review completed through normal `status` and
+  `result` with structured output and raw output preserved.
+- MCP tool calls now use async child processes so a foreground delegate cannot
+  block later lifecycle messages.
+- Subagents now get the same git-read Bash allowlist as the main Claude run.
+- Exception-failed background jobs persist a failed result, not only failed
+  status.
+- MCP inserts `--` before user prompt text so dash-leading text stays
+  positional.
+- Secret heuristics cover more common token shapes while remaining warn-first
+  by default.
 
 ## Remaining GA Work
 

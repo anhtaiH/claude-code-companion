@@ -125,7 +125,7 @@ test('plugin manifest installs as claude from the companion marketplace', () => 
   );
   assert.match(installer, /codex mcp add "\$\{marketplace_name\}"/);
   assert.match(installer, /min_claude_version="2\.1\.158"/);
-  assert.match(installer, /mcp_registered/);
+  assert.doesNotMatch(installer, /mcp_registered/);
   assert.match(installer, /\$claude setup/);
 });
 
@@ -341,6 +341,15 @@ test('Claude runs with read-only repository tools', () => {
     'Glob',
     'Grep',
     'Bash',
+  ]);
+  assert.deepEqual(agents['codebase-researcher'].allowedTools, [
+    'Read',
+    'Glob',
+    'Grep',
+    'Bash(git status:*)',
+    'Bash(git diff:*)',
+    'Bash(git log:*)',
+    'Bash(git show:*)',
   ]);
   assert.deepEqual(agents['codebase-researcher'].disallowedTools, [
     'Edit',
@@ -639,6 +648,23 @@ test('OpenAI key heuristic avoids English slug false positives', () => {
   );
   assert.equal(hasSecretLikeText('-----BEGIN PRIVATE KEY-----'), true);
   assert.equal(hasSecretLikeText(FAKE_OPENAI_KEY), true);
+});
+
+test('secret heuristic catches common token shapes and quoted assignments', () => {
+  assert.equal(hasSecretLikeText('ghp_' + 'A'.repeat(36)), true);
+  assert.equal(hasSecretLikeText('github_pat_' + 'A'.repeat(30)), true);
+  assert.equal(hasSecretLikeText('xoxb-' + '1234567890-'.repeat(3)), true);
+  assert.equal(hasSecretLikeText('AIza' + 'A'.repeat(35)), true);
+  assert.equal(hasSecretLikeText('sk_live_' + 'A'.repeat(24)), true);
+  assert.equal(hasSecretLikeText('npm_' + 'A'.repeat(24)), true);
+  assert.equal(
+    hasSecretLikeText(
+      'eyJ' + 'A'.repeat(12) + '.' + 'B'.repeat(12) + '.' + 'C'.repeat(12),
+    ),
+    true,
+  );
+  assert.equal(hasSecretLikeText('"token": "' + 'A'.repeat(12) + '"'), true);
+  assert.equal(hasSecretLikeText('export API_KEY=' + 'A'.repeat(12)), true);
 });
 
 test('review uses assistant transcript when result event is only progress', () => {
@@ -1237,6 +1263,48 @@ test('background result can be fetched by job id after cwd drift', () => {
   assert.equal(payload.result.rawOutput, 'Handled task');
 });
 
+test('exception-failed background jobs persist a failed result', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  const env = buildEnv(binDir);
+
+  const started = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--background', '--json'],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const jobId = JSON.parse(started.stdout).jobId;
+
+  let failed = false;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const status = run(
+      process.execPath,
+      [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+      { env },
+    );
+    assert.equal(status.status, 0, status.stderr);
+    if (JSON.parse(status.stdout).jobs[0]?.status === 'failed') {
+      failed = true;
+      break;
+    }
+    sleep(50);
+  }
+  assert.equal(failed, true);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.job.status, 'failed');
+  assert.equal(payload.result.companion.resultKind, 'failed-review');
+  assert.match(payload.result.review.summary, /failed before producing a result/);
+});
+
 test('result refreshes stale running jobs before returning', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
@@ -1691,6 +1759,85 @@ test('MCP claude_code rejects write and dangerous inputs', () => {
   assert.match(response.result.content[0].text, /read-only/i);
 });
 
+test('MCP keeps dash-leading user prompt text positional', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_STDIN_FILE: stdinFile });
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'diagnose',
+          cwd: repo,
+          prompt: '--scope repo should stay prompt text',
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    fs.readFileSync(stdinFile, 'utf8'),
+    /Request: --scope repo should stay prompt text/,
+  );
+});
+
+test('MCP foreground calls do not block later lifecycle messages', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'slow' });
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'diagnose',
+          cwd: repo,
+          timeout_ms: 800,
+          prompt: 'slow foreground diagnosis',
+        },
+      },
+    },
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: { action: 'status', cwd: repo },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  const responses = result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(responses[0].id, 2);
+  assert.equal(responses[0].result.isError, false);
+  assert.equal(responses[1].id, 1);
+  assert.equal(responses[1].result.isError, true);
+});
+
 test('MCP claude_code delegate action supports every advertised kind', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
@@ -1729,7 +1876,9 @@ test('MCP claude_code delegate action supports every advertised kind', () => {
 
   assert.equal(responses.length, EXPECTED_KINDS.length);
   for (const [index, kind] of EXPECTED_KINDS.entries()) {
-    const payload = JSON.parse(responses[index].result.content[0].text);
+    const response = responses.find((entry) => entry.id === index + 1);
+    assert.ok(response, `missing response for ${kind}`);
+    const payload = JSON.parse(response.result.content[0].text);
     assert.equal(payload.sessionId, 'fake-session-1', kind);
     if (['review', 'adversarial_review'].includes(kind)) {
       assert.equal(payload.review.verdict, 'changes-needed', kind);
@@ -1807,8 +1956,12 @@ test('MCP claude_code manages background jobs through the same tool', () => {
     .trim()
     .split('\n')
     .map((line) => JSON.parse(line));
-  const statusPayload = JSON.parse(responses[0].result.content[0].text);
-  const cancelPayload = JSON.parse(responses[1].result.content[0].text);
+  const statusResponse = responses.find((entry) => entry.id === 2);
+  const cancelResponse = responses.find((entry) => entry.id === 3);
+  assert.ok(statusResponse);
+  assert.ok(cancelResponse);
+  const statusPayload = JSON.parse(statusResponse.result.content[0].text);
+  const cancelPayload = JSON.parse(cancelResponse.result.content[0].text);
   assert.equal(statusPayload.jobs[0].id, jobId);
   assert.equal(cancelPayload.status, 'cancelled');
 });

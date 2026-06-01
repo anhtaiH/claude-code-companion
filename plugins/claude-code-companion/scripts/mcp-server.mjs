@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 import readline from 'node:readline';
@@ -313,7 +313,7 @@ function delegateArgs(input = {}) {
     pushSharedRuntimeArgs(args, input);
     pushReviewTargetArgs(args, input);
     const focusText = reviewFocusText(input);
-    if (focusText) args.push(focusText);
+    if (focusText) args.push('--', focusText);
     return args;
   }
 
@@ -321,7 +321,10 @@ function delegateArgs(input = {}) {
     const args = [COMPANION, 'adversarial-review', '--json'];
     pushSharedRuntimeArgs(args, input);
     pushReviewTargetArgs(args, input);
-    args.push(delegatedTaskPrompt(input) || 'Challenge the current change.');
+    args.push(
+      '--',
+      delegatedTaskPrompt(input) || 'Challenge the current change.',
+    );
     return args;
   }
 
@@ -331,7 +334,7 @@ function delegateArgs(input = {}) {
   pushArg(args, 'resume-last', input.resume_last);
   pushArg(args, 'fresh', input.fresh);
   const prompt = delegatedTaskPrompt(input);
-  if (prompt) args.push(prompt);
+  if (prompt) args.push('--', prompt);
   return args;
 }
 
@@ -361,7 +364,31 @@ function companionArgs(input = {}) {
   );
 }
 
-function callTool(name, input = {}) {
+function runCompanion(args, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, {
+      cwd,
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', (error) => {
+      resolve({ status: 1, stdout, stderr: error.message || stderr });
+    });
+    child.on('close', (status) => {
+      resolve({ status: status ?? 1, stdout, stderr });
+    });
+  });
+}
+
+async function callTool(name, input = {}) {
   if (name !== 'claude_code') {
     return {
       content: [
@@ -376,12 +403,10 @@ function callTool(name, input = {}) {
 
   try {
     const resolvedInput = withResolvedCwd(input);
-    const result = spawnSync(process.execPath, companionArgs(resolvedInput), {
-      cwd: resolvedInput.cwd,
-      env: process.env,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    const result = await runCompanion(
+      companionArgs(resolvedInput),
+      resolvedInput.cwd,
+    );
     const text = (result.stdout || result.stderr || '').trim();
     return {
       content: [{ type: 'text', text }],
@@ -484,7 +509,7 @@ function getPrompt(name, input = {}) {
 }
 
 const rl = readline.createInterface({ input: process.stdin });
-rl.on('line', (line) => {
+rl.on('line', async (line) => {
   if (!line.trim()) return;
   try {
     const message = JSON.parse(line);
@@ -499,7 +524,7 @@ rl.on('line', (line) => {
     } else if (message.method === 'tools/call') {
       respond(
         message.id,
-        callTool(message.params?.name, message.params?.arguments ?? {}),
+        await callTool(message.params?.name, message.params?.arguments ?? {}),
       );
     } else if (message.method === 'prompts/list') {
       respond(message.id, { prompts });

@@ -40,9 +40,9 @@ codex mcp add claude-code-companion -- node "<installed-plugin-root>/scripts/mcp
 ## Upgrade
 
 Rerun the installer. It removes the previous plugin and MCP registration before
-installing the current marketplace entry. The installer uses the plugin MCP
-manifest when Codex exposes it and adds one global `claude-code-companion` MCP
-entry only when needed.
+installing the current marketplace entry. After plugin install it replaces any
+manifest-created MCP entry with one absolute `claude-code-companion` command
+pointing at the installed plugin cache.
 
 ## Uninstall
 
