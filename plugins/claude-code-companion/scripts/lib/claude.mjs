@@ -489,7 +489,8 @@ function normalizeGroupedReview(parsed) {
 
 function normalizeMarkdownReview(text) {
   const sections = sectionBySeverity(text);
-  if (!sections.size) return null;
+  const headingFindings = findingHeadingsBySeverity(text);
+  if (!sections.size && !headingFindings.length) return null;
   const findings = [];
   for (const severity of SEVERITIES) {
     const body = sections.get(severity);
@@ -504,6 +505,7 @@ function normalizeMarkdownReview(text) {
       });
     }
   }
+  findings.push(...headingFindings);
   return {
     verdict: findings.some((finding) =>
       ['critical', 'high'].includes(finding.severity),
@@ -519,6 +521,62 @@ function normalizeMarkdownReview(text) {
       normalizeFinding(finding, index),
     ),
     next_steps: [],
+  };
+}
+
+function findingHeadingsBySeverity(text) {
+  const lines = String(text).split(/\r?\n/);
+  const findings = [];
+  let current = null;
+
+  function flush() {
+    if (!current) return;
+    const body = current.body.join('\n').trim();
+    if (isNoFindingValue(current.title) && isNoFindingValue(body)) {
+      current = null;
+      return;
+    }
+    findings.push({
+      severity: current.severity,
+      title: current.title,
+      body: body || current.title,
+      ...locationFromText(`${current.title}\n${body}`),
+    });
+    current = null;
+  }
+
+  for (const line of lines) {
+    const heading = parseFindingHeading(line);
+    if (heading) {
+      flush();
+      current = { ...heading, body: [] };
+      continue;
+    }
+    if (current) current.body.push(line);
+  }
+  flush();
+
+  return findings;
+}
+
+function parseFindingHeading(line) {
+  const trimmed = String(line ?? '').trim();
+  if (!trimmed || /^[-*]\s+/.test(trimmed)) return null;
+  const heading = trimmed
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^\*\*|\*\*$/g, '')
+    .trim();
+  const match =
+    heading.match(
+      /^(?:Finding\s+\d+\s*[-–—:]\s*)?(Critical|High|Medium|Low)\s*[-–—:]\s*(.+)$/i,
+    ) ??
+    heading.match(/^\[(Critical|High|Medium|Low)\]\s*(.+)$/i);
+  if (!match) return null;
+  const title = match[2].trim() || 'Finding';
+  if (isNoFindingValue(title)) return null;
+  return {
+    severity: match[1].toLowerCase(),
+    title,
   };
 }
 

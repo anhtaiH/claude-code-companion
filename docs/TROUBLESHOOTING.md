@@ -15,15 +15,20 @@ claude auth login
 
 Start a fresh Codex session and run `$claude setup` again.
 
+## Review Reports Sensitive-Context Warnings
+
+Sensitive-context warnings mean the companion found heuristic secret-like
+outbound context. By default this does not block Claude. It scans tracked diffs,
+untracked file bodies, task prompts, focus text, and repo instruction context.
+
+If your team wants this to block before Claude is called, use CLI
+`--strict-sensitive-context` or MCP `strict_sensitive_context: true`.
+
 ## Review Blocks With Exit Code 2
 
-Exit code `2` means the companion found secret-like outbound context before it
-called Claude. It scans tracked diffs, untracked file bodies, task prompts,
-focus text, and repo instruction context.
-
-Remove the secret-like content from the diff or prompt before retrying. If the
-content is intentional and approved for Claude, use CLI
-`--allow-sensitive-context` or MCP `allow_sensitive_context: true`.
+Exit code `2` means strict sensitive-context mode found secret-like outbound
+context before it called Claude. Remove the secret-like content from the diff or
+prompt, or rerun without strict mode.
 
 ## Result Contains Redactions
 
@@ -33,7 +38,7 @@ output and keeps the result so `status` and `result` still work.
 
 ## Job Fails With Exit 124
 
-Exit `124` means Claude timed out. The default timeout is 15 minutes. Retry with
+Exit `124` means Claude timed out. The default timeout is 30 minutes. Retry with
 a narrower prompt, or pass CLI `--timeout-ms <milliseconds>` or MCP
 `timeout_ms`.
 

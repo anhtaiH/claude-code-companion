@@ -30,6 +30,7 @@ Use `$claude` in normal chat:
 
 ```text
 $claude review my current changes
+$claude review the whole repo
 $claude adversarial review against main, focus auth and rollback
 $claude diagnose the failing checkout test
 $claude plan the safest implementation path
@@ -85,15 +86,18 @@ Under the hood, Claude also gets read-only specialist subagents for codebase
 research, test gaps, security, architecture, release risk, and log diagnosis.
 Claude manages that internal work and returns one synthesized result to Codex.
 
-Before any Claude call, the companion scans tracked diffs, untracked file
-bodies, task prompts, focus text, and repo instruction context for secret-like
-content. It blocks by default with exit code `2`. Use
-`--allow-sensitive-context` or MCP `allow_sensitive_context` only when you
-explicitly want to send that context to Claude.
+Before review calls, the companion scans tracked diffs, untracked file bodies,
+focus text, and repo instruction context for secret-like content. Before task
+calls, it scans the task prompt and repo instruction context. The default is
+low-friction: it records a warning and continues. Use
+`--strict-sensitive-context` or MCP `strict_sensitive_context` when a team wants
+heuristic secret-like context to block before Claude is called.
 
-Usage is handled by your Claude Code plan. The companion sets a 15-minute
-timeout by default and does not set a per-call dollar budget unless you pass
-`--max-budget-usd` or MCP `max_budget_usd`.
+Usage is handled by your Claude Code plan. The companion sets a 30-minute
+timeout by default so deep background reviews have room to finish, and it does
+not set a per-call dollar budget unless you pass `--max-budget-usd` or MCP
+`max_budget_usd`. For long or broad delegations, prefer background mode; add a
+budget guard when your environment needs one.
 
 Optional output redaction is separate from outbound blocking: if Claude quotes
 text that looks like a token or password, the stored result is redacted and kept
@@ -117,6 +121,7 @@ Run your normal secret-scanning tooling before publishing a repository.
 - Security policy: [SECURITY.md](SECURITY.md).
 - Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 - Release checklist: [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+- GA polish plan: [docs/GA_POLISH_PLAN.md](docs/GA_POLISH_PLAN.md).
 
 ## Development
 

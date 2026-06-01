@@ -24,7 +24,7 @@ Security-sensitive areas include:
 - shell command construction
 - state persistence
 - log redaction
-- outbound secret-like context blocking
+- outbound secret-like context warnings and strict blocking
 - secret-like output handling
 - prompt content boundaries
 
@@ -35,9 +35,13 @@ ask Claude Code to edit files.
 
 Before prompt construction it scans tracked diffs, untracked file bodies, task
 prompts, focus text, and repository instruction context for secret-like content.
-If the scan matches, the companion exits with code `2` and reports redacted
-metadata. The explicit override is `--allow-sensitive-context` in the CLI or
-`allow_sensitive_context` in MCP.
+If the scan matches, the default behavior is to record a warning and continue.
+Strict mode exits with code `2` and reports redacted metadata before Claude is
+called. Enable strict mode with `--strict-sensitive-context` in the CLI or
+`strict_sensitive_context` in MCP.
+
+Pre-GA builds blocked by default. The GA default is warn-and-continue to keep
+Codex delegation reliable; strict mode is the opt-in blocking policy.
 
 This scan is a defensive heuristic. It is not a replacement for a dedicated
 secret scanner in CI or before public release.

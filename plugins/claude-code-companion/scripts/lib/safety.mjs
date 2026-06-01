@@ -127,6 +127,13 @@ export function redactSensitivePayload(payload) {
   return {
     payload: {
       ...redacted,
+      companion:
+        redacted?.companion && typeof redacted.companion === 'object'
+          ? {
+              ...redacted.companion,
+              outputRedactions: redactions,
+            }
+          : redacted?.companion,
       redactions,
     },
     redactions,
@@ -136,6 +143,8 @@ export function redactSensitivePayload(payload) {
 export function blockSensitiveContext(sources, options = {}) {
   const findings = scanSensitiveSources(sources);
   if (!findings.length) return [];
-  if (options.allowSensitiveContext) return summarizeFindings(findings);
-  throw new SensitiveContextError(findings);
+  if (options.strictSensitiveContext) {
+    throw new SensitiveContextError(findings);
+  }
+  return summarizeFindings(findings);
 }

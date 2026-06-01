@@ -16,6 +16,18 @@ Default delegations use `opus[1m]`, `max` effort, Ultracode dynamic workflows,
 and read-only specialist subagents. Only set `model` or `effort` when the user
 asks for a different tradeoff.
 
+The primary caller is Codex. Choose sensible tool arguments yourself instead
+of making the human learn the runtime:
+
+- Current uncommitted work: `target: "working_tree"`.
+- Branch review against a base ref: `target: "branch"` plus `base`.
+- Full repository review: `target: "repo"`.
+- Diagnosis, planning, and research that do not need a diff target:
+  `target: "none"`.
+- Leave `strict_sensitive_context` unset by default. The companion records a
+  warning for heuristic secret-like context and continues. Use strict mode only
+  when the user explicitly asks for blocking behavior.
+
 ## When To Use
 
 - Use `action: "setup"` when the user asks for setup, doctor, readiness, or
@@ -39,8 +51,6 @@ present Claude's synthesized findings to the user.
 ## Boundaries
 
 - Do not ask Claude Code to edit files.
-- Do not set `allow_sensitive_context` unless the user explicitly approves
-  sending secret-like context to Claude.
 - After presenting review findings, stop and ask the user which findings they
   want fixed before changing code.
 - Treat Claude output as advisory. Codex remains responsible for verifying any
@@ -53,6 +63,9 @@ present Claude's synthesized findings to the user.
 3. Use `background: true` for larger work.
 4. Poll with `action: "status"`.
 5. Fetch with `action: "result"` and present findings by severity.
+6. Include companion health when it is present: job id, Claude session id,
+   model, target label, parser status, raw-output preservation, warnings, and
+   whether transcript recovery was needed.
 
 If `claude_code` is unavailable, resolve the companion script at
 `../../scripts/claude-companion.mjs` relative to this `SKILL.md` file and run

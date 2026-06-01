@@ -162,6 +162,12 @@ test('setup reports ready with fake Claude installed and authenticated', () => {
   assert.equal(payload.auth.orgId, undefined);
   assert.equal(payload.defaults.model, 'opus[1m]');
   assert.equal(payload.defaults.effort, 'max');
+  assert.equal(payload.policy.timeoutMs, 30 * 60 * 1000);
+  assert.equal(payload.policy.sensitiveContext, 'warn');
+  assert.equal(
+    payload.policy.strictSensitiveContextFlag,
+    '--strict-sensitive-context',
+  );
   assert.ok(payload.defaults.subagents.includes('codebase-researcher'));
 });
 
@@ -227,6 +233,9 @@ test('review returns structured findings from fake Claude', () => {
   assert.equal(payload.review.verdict, 'changes-needed');
   assert.equal(payload.review.findings[0].file, 'src/app.js');
   assert.equal(payload.sessionId, 'fake-session-1');
+  assert.equal(payload.rawOutput.includes('Fake review found one issue'), true);
+  assert.equal(payload.companion.resultKind, 'structured-review');
+  assert.equal(payload.companion.rawOutput, 'preserved');
 });
 
 test('Claude runs with read-only repository tools', () => {
@@ -497,6 +506,33 @@ High:
   assert.doesNotMatch(normalized.parsed.findings[0].body, /Setup worked/);
 });
 
+test('review parser accepts markdown finding headings with severity', () => {
+  const normalized = normalizeReviewPayload(`
+## Findings
+
+### Finding 1 - HIGH - Task workflow prompts are untested
+Runtime changed in plugins/claude-code-companion/scripts/claude-companion.mjs:385.
+
+### MEDIUM - Task warnings are not rendered
+Evidence: plugins/claude-code-companion/scripts/lib/render.mjs:97.
+`);
+
+  assert.equal(normalized.parseError, null);
+  assert.equal(normalized.parsed.verdict, 'changes-needed');
+  assert.equal(normalized.parsed.findings.length, 2);
+  assert.equal(normalized.parsed.findings[0].severity, 'high');
+  assert.equal(
+    normalized.parsed.findings[0].title,
+    'Task workflow prompts are untested',
+  );
+  assert.equal(
+    normalized.parsed.findings[0].file,
+    'plugins/claude-code-companion/scripts/claude-companion.mjs',
+  );
+  assert.equal(normalized.parsed.findings[0].line_start, 385);
+  assert.equal(normalized.parsed.findings[1].severity, 'medium');
+});
+
 test('OpenAI key heuristic avoids English slug false positives', () => {
   assert.equal(
     hasSecretLikeText('hooks/pre-task-confidentiality-check.md'),
@@ -559,6 +595,145 @@ test('streamed subagent events parse the final Claude result', () => {
   assert.equal(payload.rawOutput, 'Handled stream result');
   assert.equal(payload.sessionId, 'fake-session-stream');
   assert.equal(payload.claude.eventCount, 2);
+  assert.equal(payload.companion.resultKind, 'task-output');
+  assert.equal(payload.companion.rawOutput, 'preserved');
+  assert.equal(payload.companion.sensitiveContext, 'clear');
+  assert.equal(
+    payload.companion.resultTextSource,
+    payload.claude.resultTextSource,
+  );
+});
+
+test('task prompts include kind-specific workflow guidance', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_STDIN_FILE: stdinFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--kind',
+      'diagnose',
+      '--json',
+      'diagnose checkout failure',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const stdin = fs.readFileSync(stdinFile, 'utf8');
+  assert.match(stdin, /## Work Mode/);
+  assert.match(stdin, /Diagnose mode:/);
+  assert.match(stdin, /## Output Contract/);
+});
+
+test('resume task keeps the base kind workflow guidance', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stateDir = makeTempDir();
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, {
+    CLAUDE_CODE_COMPANION_STATE_DIR: stateDir,
+    FAKE_CLAUDE_STDIN_FILE: stdinFile,
+  });
+
+  const first = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--kind', 'diagnose', '--json', 'first'],
+    { env },
+  );
+  assert.equal(first.status, 0, first.stderr);
+
+  const second = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--kind',
+      'diagnose',
+      '--resume-last',
+      '--json',
+    ],
+    { env },
+  );
+
+  assert.equal(second.status, 0, second.stderr);
+  const stdin = fs.readFileSync(stdinFile, 'utf8');
+  assert.match(stdin, /Diagnose mode:/);
+});
+
+test('timed out task persists a normal failed result', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'slow' });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--timeout-ms',
+      '5',
+      '--json',
+      'slow diagnosis',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 124);
+  const payload = JSON.parse(result.stdout);
+  assert.match(payload.rawOutput, /timed out/i);
+  assert.match(payload.claude.error, /timed out/i);
+
+  const stored = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, '--json'],
+    { env },
+  );
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, 'failed');
+  assert.match(storedPayload.result.rawOutput, /timed out/i);
+});
+
+test('nonzero empty-output task persists a normal failed result', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'nonzero' });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--json', 'failing diagnosis'],
+    { env },
+  );
+
+  assert.equal(result.status, 2);
+  const payload = JSON.parse(result.stdout);
+  assert.match(payload.rawOutput, /simulated claude failure/);
+  assert.equal(payload.claude.status, 2);
+
+  const stored = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, '--json'],
+    { env },
+  );
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(storedPayload.job.status, 'failed');
+  assert.match(storedPayload.result.rawOutput, /simulated claude failure/);
 });
 
 test('secret-like Claude output is redacted and persisted', () => {
@@ -578,6 +753,11 @@ test('secret-like Claude output is redacted and persisted', () => {
   assert.equal(JSON.stringify(payload).includes(FAKE_OPENAI_KEY), false);
   assert.match(payload.rawOutput, /\[REDACTED:token-assignment\]/);
   assert.ok(payload.redactions.some((entry) => entry.category === 'openai-api-key'));
+  assert.ok(
+    payload.companion.outputRedactions.some(
+      (entry) => entry.category === 'openai-api-key',
+    ),
+  );
 
   const stored = run(
     process.execPath,
@@ -589,7 +769,7 @@ test('secret-like Claude output is redacted and persisted', () => {
   assert.equal(storedPayload.result.rawOutput, payload.rawOutput);
 });
 
-test('secret-like tracked diff blocks before Claude is invoked', () => {
+test('secret-like tracked diff warns and still invokes Claude by default', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
@@ -606,20 +786,35 @@ test('secret-like tracked diff blocks before Claude is invoked', () => {
     { env },
   );
 
-  assert.equal(result.status, 2);
+  assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.code, 'SensitiveContextError');
+  assert.equal(payload.review.verdict, 'changes-needed');
+  assert.equal(payload.warnings[0].type, 'sensitive-context-detected');
   assert.ok(
-    payload.sensitiveContext.some(
+    payload.warnings[0].findings.some(
       (entry) =>
         entry.sourceKind === 'tracked-diff' &&
         entry.category === 'openai-api-key',
     ),
   );
-  assert.equal(fs.existsSync(argsFile), false);
+  assert.equal(payload.companion.sensitiveContext, 'warned');
+  assert.equal(fs.existsSync(argsFile), true);
+
+  const stored = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, '--json'],
+    { env },
+  );
+  assert.equal(stored.status, 0, stored.stderr);
+  const storedPayload = JSON.parse(stored.stdout);
+  assert.equal(
+    storedPayload.result.warnings[0].type,
+    'sensitive-context-detected',
+  );
+  assert.equal(storedPayload.result.companion.sensitiveContext, 'warned');
 });
 
-test('secret-like untracked file blocks before Claude is invoked', () => {
+test('secret-like untracked file warns and still invokes Claude by default', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
@@ -633,42 +828,20 @@ test('secret-like untracked file blocks before Claude is invoked', () => {
     { env },
   );
 
-  assert.equal(result.status, 2);
+  assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.ok(
-    payload.sensitiveContext.some(
+    payload.warnings[0].findings.some(
       (entry) =>
         entry.sourceKind === 'untracked-file' &&
         entry.path === 'scratch.env' &&
         entry.category === 'password-assignment',
     ),
   );
-  assert.equal(fs.existsSync(argsFile), false);
+  assert.equal(fs.existsSync(argsFile), true);
 });
 
-test('gitignored secret-like files are skipped from outbound scanning', () => {
-  const binDir = makeTempDir();
-  installFakeClaude(binDir);
-  const repo = makeTempDir();
-  initGitRepo(repo);
-  fs.writeFileSync(path.join(repo, '.gitignore'), 'secrets.env\n');
-  run('git', ['add', '.gitignore'], { cwd: repo });
-  run('git', ['commit', '-m', 'ignore secrets'], { cwd: repo });
-  fs.writeFileSync(path.join(repo, 'secrets.env'), FAKE_PASSWORD_ASSIGNMENT);
-  const env = buildEnv(binDir);
-
-  const result = run(
-    process.execPath,
-    [COMPANION, 'review', '--cwd', repo, '--json'],
-    { env },
-  );
-
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.review.verdict, 'changes-needed');
-});
-
-test('explicit sensitive-context override works and records a warning', () => {
+test('legacy allow-sensitive-context flag is accepted as warn-mode compatibility', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
@@ -694,9 +867,102 @@ test('explicit sensitive-context override works and records a warning', () => {
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
+  assert.equal(payload.warnings[0].type, 'sensitive-context-detected');
+  assert.equal(payload.companion.sensitiveContext, 'warned');
+  assert.equal(fs.existsSync(argsFile), true);
+});
+
+test('gitignored secret-like files are skipped from outbound scanning', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'secrets.env\n');
+  run('git', ['add', '.gitignore'], { cwd: repo });
+  run('git', ['commit', '-m', 'ignore secrets'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'secrets.env'), FAKE_PASSWORD_ASSIGNMENT);
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
   assert.equal(payload.review.verdict, 'changes-needed');
-  assert.equal(payload.warnings[0].type, 'sensitive-context-override');
-  assert.ok(fs.existsSync(argsFile));
+});
+
+test('strict sensitive-context mode blocks before Claude is invoked', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  fs.writeFileSync(
+    path.join(repo, 'src', 'app.js'),
+    `export const token = '${FAKE_OPENAI_KEY}';\n`,
+  );
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'review',
+      '--cwd',
+      repo,
+      '--strict-sensitive-context',
+      '--json',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 2);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.code, 'SensitiveContextError');
+  assert.ok(
+    payload.sensitiveContext.some(
+      (entry) =>
+        entry.sourceKind === 'tracked-diff' &&
+        entry.category === 'openai-api-key',
+    ),
+  );
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('strict sensitive-context mode blocks task prompts before Claude is invoked', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--strict-sensitive-context',
+      '--json',
+      `diagnose token=${FAKE_OPENAI_KEY}`,
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 2);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.code, 'SensitiveContextError');
+  assert.ok(
+    payload.sensitiveContext.some(
+      (entry) =>
+        entry.sourceKind === 'task-prompt' &&
+        entry.category === 'openai-api-key',
+    ),
+  );
+  assert.equal(fs.existsSync(argsFile), false);
 });
 
 test('read-only mode rejects write flags', () => {
@@ -944,7 +1210,19 @@ test('MCP server exposes exactly one agent-native tool and prompt templates', ()
       responses[1].result.tools[0].inputSchema.properties,
       'allow_sensitive_context',
     ),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(
+      responses[1].result.tools[0].inputSchema.properties,
+      'strict_sensitive_context',
+    ),
     true,
+  );
+  assert.ok(
+    responses[1].result.tools[0].inputSchema.properties.target.enum.includes(
+      'repo',
+    ),
   );
   assert.deepEqual(
     responses[1].result.tools[0].inputSchema.properties.kind.enum,
@@ -1005,7 +1283,7 @@ test('MCP claude_code delegate action routes to fake Claude review', () => {
   assert.equal(payload.sessionId, 'fake-session-1');
 });
 
-test('MCP claude_code forwards budget and sensitive-context override', () => {
+test('MCP claude_code forwards budget and warns on sensitive context by default', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
@@ -1028,7 +1306,6 @@ test('MCP claude_code forwards budget and sensitive-context override', () => {
           cwd: repo,
           target: 'working_tree',
           max_budget_usd: 0.5,
-          allow_sensitive_context: true,
         },
       },
     },
@@ -1041,9 +1318,108 @@ test('MCP claude_code forwards budget and sensitive-context override', () => {
   const response = JSON.parse(result.stdout);
   assert.equal(response.result.isError, false);
   const payload = JSON.parse(response.result.content[0].text);
-  assert.equal(payload.warnings[0].type, 'sensitive-context-override');
+  assert.equal(payload.warnings[0].type, 'sensitive-context-detected');
   const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
   assert.equal(args[args.indexOf('--max-budget-usd') + 1], '0.5');
+});
+
+test('MCP claude_code supports repo target and strict sensitive-context mode', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_STDIN_FILE: stdinFile });
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'adversarial_review',
+          cwd: repo,
+          target: 'repo',
+          strict_sensitive_context: true,
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.result.isError, false);
+  const payload = JSON.parse(response.result.content[0].text);
+  assert.equal(payload.targetLabel, 'repository review');
+  assert.match(fs.readFileSync(stdinFile, 'utf8'), /repository review/);
+});
+
+test('MCP review rejects target none to avoid accidental repo review', () => {
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'review',
+          target: 'none',
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { input });
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /target "repo"/);
+});
+
+test('MCP strict sensitive-context mode blocks and reports an error', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  fs.writeFileSync(
+    path.join(repo, 'src', 'app.js'),
+    `export const token = '${FAKE_OPENAI_KEY}';\n`,
+  );
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'review',
+          cwd: repo,
+          target: 'working_tree',
+          strict_sensitive_context: true,
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout);
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /SensitiveContextError/);
+  assert.equal(fs.existsSync(argsFile), false);
 });
 
 test('MCP claude_code rejects write and dangerous inputs', () => {

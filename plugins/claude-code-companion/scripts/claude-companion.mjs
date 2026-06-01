@@ -65,7 +65,7 @@ const REVIEW_SCHEMA_PATH = path.join(
   'schemas',
   'review-output.schema.json',
 );
-const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_CONTINUE_PROMPT =
   'Continue from the current Claude Code companion session. Stay read-only and return the next useful diagnosis or plan.';
 
@@ -74,9 +74,9 @@ function printUsage() {
     [
       'Usage:',
       '  node scripts/claude-companion.mjs setup [--cwd <path>] [--json]',
-      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch|repo] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--allow-sensitive-context] [--json]',
+      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch|repo] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--strict-sensitive-context] [--json]',
       '  node scripts/claude-companion.mjs adversarial-review [same flags as review] [focus text]',
-      '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [--allow-sensitive-context] [prompt]',
+      '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [--strict-sensitive-context] [prompt]',
       '  node scripts/claude-companion.mjs status [job-id] [--all] [--json]',
       '  node scripts/claude-companion.mjs result [job-id] [--json]',
       '  node scripts/claude-companion.mjs cancel [job-id] [--json]',
@@ -152,6 +152,11 @@ function buildSetupReport(cwd) {
     workspaceRoot,
     stateDir: resolveStateDir(workspaceRoot),
     defaults: getClaudeDefaults(),
+    policy: {
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      sensitiveContext: 'warn',
+      strictSensitiveContextFlag: '--strict-sensitive-context',
+    },
     nextSteps,
   };
 }
@@ -192,6 +197,9 @@ function renderExecutionPayload(payload, fallback = '') {
       targetLabel: payload.targetLabel,
       sessionId: payload.sessionId,
       review: payload.review,
+      parseError: payload.parseError,
+      warnings: payload.warnings,
+      companion: payload.companion,
     });
   }
   if (Object.hasOwn(payload ?? {}, 'rawOutput')) return renderTaskResult(payload);
@@ -209,13 +217,13 @@ function finalizeExecution(execution) {
   };
 }
 
-function warningForSensitiveOverride(findings) {
+function warningForSensitiveContext(findings) {
   if (!findings.length) return [];
   return [
     {
-      type: 'sensitive-context-override',
+      type: 'sensitive-context-detected',
       message:
-        'Sensitive-looking outbound context was allowed because an explicit override was set.',
+        'Sensitive-looking outbound context was detected and sent to Claude. Use --strict-sensitive-context to block instead.',
       findings,
     },
   ];
@@ -276,6 +284,25 @@ function fallbackReview(summary) {
   };
 }
 
+function effectiveModelName(claude) {
+  if (!Array.isArray(claude.effectiveModels)) return null;
+  return claude.effectiveModels[0] ?? null;
+}
+
+function reviewCompanionHealth({ parsed, claude, target, sensitiveContext }) {
+  return {
+    resultKind: parsed.parseError ? 'fallback-review' : 'structured-review',
+    rawOutput: 'preserved',
+    targetScope: target.mode,
+    targetLabel: target.label,
+    parser: parsed.parseError ? 'fallback' : 'ok',
+    parseError: parsed.parseError ?? null,
+    sensitiveContext: sensitiveContext.length ? 'warned' : 'clear',
+    model: effectiveModelName(claude),
+    resultTextSource: claude.resultTextSource,
+  };
+}
+
 async function executeReviewRun(request) {
   const target = resolveReviewTarget(request.cwd, {
     base: request.base,
@@ -286,7 +313,7 @@ async function executeReviewRun(request) {
   const reviewName = request.reviewName;
   const sensitiveContext = blockSensitiveContext(
     reviewSensitiveSources(context, request.focusText),
-    { allowSensitiveContext: request.allowSensitiveContext },
+    { strictSensitiveContext: request.strictSensitiveContext },
   );
   const prompt = buildReviewPrompt(context, reviewName, request.focusText);
   const claude = runClaudePrint(context.repoRoot, prompt, {
@@ -305,6 +332,13 @@ async function executeReviewRun(request) {
         ? `Claude output could not be parsed: ${parsed.parseError ?? claude.error ?? 'unknown parse error'}`
         : `Claude review failed: ${claude.error ?? claude.stderr.trim() ?? `exit ${claude.status}`}`,
     );
+  const companion = reviewCompanionHealth({
+    parsed,
+    claude,
+    target,
+    sensitiveContext,
+  });
+  const warnings = warningForSensitiveContext(sensitiveContext);
 
   return {
     exitStatus: claude.status,
@@ -313,6 +347,9 @@ async function executeReviewRun(request) {
       targetLabel: target.label,
       sessionId: claude.sessionId,
       review,
+      parseError: parsed.parseError,
+      warnings,
+      companion,
     }),
     payload: {
       reviewName,
@@ -321,7 +358,8 @@ async function executeReviewRun(request) {
       review,
       parseError: parsed.parseError,
       rawOutput: parsed.rawOutput,
-      warnings: warningForSensitiveOverride(sensitiveContext),
+      warnings,
+      companion,
       context: {
         repoRoot: context.repoRoot,
         branch: context.branch,
@@ -345,7 +383,67 @@ async function executeReviewRun(request) {
   };
 }
 
-function buildTaskPrompt(cwd, prompt) {
+const TASK_WORKFLOWS = {
+  diagnose: [
+    'Diagnose mode: identify the likely root cause, the evidence for it, and the narrowest next verification step.',
+    'Use log-diagnostician for logs or stack traces. Use codebase-researcher when the relevant code path is unclear.',
+    'Do not propose broad rewrites before ruling out configuration, environment, and recent-change causes.',
+  ],
+  plan: [
+    'Plan mode: produce a concrete implementation plan with ordering, verification, risks, and rollback or escape hatches when relevant.',
+    'Use codebase-researcher first for unfamiliar areas and architecture-critic for design tradeoffs.',
+    'Prefer a plan Codex can execute without follow-up questions.',
+  ],
+  research: [
+    'Research mode: map the relevant files, conventions, and facts Codex should know before acting.',
+    'Separate observed facts from inferences and cite file paths or command evidence when available.',
+  ],
+  test_gap_review: [
+    'Test-gap mode: find missing or weak tests tied to observable behavior and regression risk.',
+    'Use test-gap-reviewer and return the smallest high-signal tests Codex should add or run.',
+  ],
+  spec_audit: [
+    'Spec-audit mode: compare implementation against the requested spec, task, or acceptance criteria.',
+    'Call out mismatches, ambiguous requirements, and evidence gaps. Do not invent requirements.',
+  ],
+  pr_review_prep: [
+    'PR-prep mode: predict reviewer questions, unclear tradeoffs, local surprises, and QA gaps.',
+    'Return review focus and concise PR/QA guidance, not a file-by-file diff summary.',
+  ],
+  release_risk: [
+    'Release-risk mode: map likely regressions, rollout and rollback concerns, operational checks, and smoke tests.',
+    'Use release-risk-reviewer and keep recommendations practical.',
+  ],
+  architecture_critique: [
+    'Architecture-critique mode: challenge coupling, ownership boundaries, abstractions, and simpler alternatives.',
+    'Use architecture-critic and distinguish must-fix design problems from acceptable tradeoffs.',
+  ],
+  refactor_plan: [
+    'Refactor-plan mode: break the refactor into safe, reviewable steps with verification after each step.',
+    'Prefer behavior-preserving moves before semantic changes.',
+  ],
+  log_diagnose: [
+    'Log-diagnose mode: parse the failure signal, identify likely cause, and suggest the next command or inspection.',
+    'Avoid broad speculation when the log already points to a concrete failing component.',
+  ],
+  dependency_review: [
+    'Dependency-review mode: check compatibility, version drift, transitive risk, migration requirements, and rollback options.',
+    'Use dependency evidence from manifests and lockfiles when available.',
+  ],
+  security_review: [
+    'Security-review mode: inspect auth, authorization, privacy, data exposure, secret handling, injection, and unsafe defaults.',
+    'Use security-reviewer and cite the boundary where the risk appears.',
+  ],
+};
+
+function workflowForTaskKind(kind) {
+  const baseKind = String(kind ?? '').replace(/-resume$/, '');
+  return TASK_WORKFLOWS[baseKind] ?? [
+    'General task mode: inspect only what is needed, synthesize findings for Codex, and keep the result actionable.',
+  ];
+}
+
+function buildTaskPrompt(cwd, prompt, kind) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const repoContext = collectRepoInstructions(workspaceRoot);
   return {
@@ -358,6 +456,15 @@ function buildTaskPrompt(cwd, prompt) {
       'Maintain an internal plan, progress ledger, and evidence ledger for this session.',
       'Use focused subagents when they improve the result: codebase-researcher, test-gap-reviewer, security-reviewer, architecture-critic, release-risk-reviewer, and log-diagnostician.',
       'Return one synthesized result for Codex. Do not include raw subagent transcripts.',
+      '',
+      '## Work Mode',
+      ...workflowForTaskKind(kind).map((line) => `- ${line}`),
+      '',
+      '## Output Contract',
+      '- Lead with the answer Codex needs next.',
+      '- Cite files, commands, job ids, model names, or logs when they support a claim.',
+      '- Keep uncertainty explicit. Do not turn a weak signal into a confirmed finding.',
+      '- Include a short verification path when Codex should act on the result.',
       '',
       '## Repository Context',
       repoContext,
@@ -373,6 +480,7 @@ async function executeTaskRun(request) {
   const task = buildTaskPrompt(
     workspaceRoot,
     request.prompt || DEFAULT_CONTINUE_PROMPT,
+    request.kind,
   );
   const sensitiveContext = blockSensitiveContext(
     [
@@ -385,7 +493,7 @@ async function executeTaskRun(request) {
         text: task.repoContext,
       },
     ],
-    { allowSensitiveContext: request.allowSensitiveContext },
+    { strictSensitiveContext: request.strictSensitiveContext },
   );
   const claude = runClaudePrint(workspaceRoot, task.prompt, {
     model: request.model,
@@ -394,12 +502,24 @@ async function executeTaskRun(request) {
     maxBudgetUsd: request.maxBudgetUsd,
     resumeSessionId: request.resumeSessionId,
   });
+  const resultText = String(claude.resultText ?? '');
+  const errorText = String(
+    claude.error ?? claude.stderr?.trim() ?? `exit ${claude.status}`,
+  );
 
   const payload = {
-    rawOutput: claude.resultText,
+    rawOutput: resultText || errorText,
     sessionId: claude.sessionId,
+    companion: {
+      resultKind: 'task-output',
+      rawOutput: 'preserved',
+      sensitiveContext: sensitiveContext.length ? 'warned' : 'clear',
+      model: effectiveModelName(claude),
+      resultTextSource: claude.resultTextSource,
+    },
     claude: {
       status: claude.status,
+      error: claude.error ?? null,
       stderr: claude.stderr,
       totalCostUsd: claude.totalCostUsd,
       usage: claude.usage,
@@ -409,7 +529,7 @@ async function executeTaskRun(request) {
       terminalReason: claude.terminalReason,
       resultTextSource: claude.resultTextSource,
     },
-    warnings: warningForSensitiveOverride(sensitiveContext),
+    warnings: warningForSensitiveContext(sensitiveContext),
   };
 
   return {
@@ -418,8 +538,10 @@ async function executeTaskRun(request) {
     payload,
     sessionId: claude.sessionId,
     summary:
-      claude.resultText.split(/\r?\n/).find(Boolean) ??
-      'Claude task completed.',
+      resultText.split(/\r?\n/).find(Boolean) ??
+      (claude.status === 0
+        ? 'Claude task completed.'
+        : `Claude task failed: ${errorText}`),
   };
 }
 
@@ -540,7 +662,7 @@ function parseCommonOptions(argv, extra = {}) {
       'resume-last',
       'resume',
       'fresh',
-      'allow-sensitive-context',
+      'strict-sensitive-context',
     ],
     aliasMap: { C: 'cwd', m: 'model', ...extra.aliasMap },
   });
@@ -576,7 +698,7 @@ async function handleReview(argv, reviewName) {
     effort: options.effort ?? null,
     timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
     maxBudgetUsd: options['max-budget-usd'] ?? null,
-    allowSensitiveContext: Boolean(options['allow-sensitive-context']),
+    strictSensitiveContext: Boolean(options['strict-sensitive-context']),
     focusText,
     summary: `${reviewName} ${targetSummary}`,
   };
@@ -612,7 +734,7 @@ async function handleTask(argv) {
       'resume-last',
       'resume',
       'fresh',
-      'allow-sensitive-context',
+      'strict-sensitive-context',
     ],
     aliasMap: { C: 'cwd', m: 'model' },
   });
@@ -642,7 +764,7 @@ async function handleTask(argv) {
     effort: options.effort ?? null,
     timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
     maxBudgetUsd: options['max-budget-usd'] ?? null,
-    allowSensitiveContext: Boolean(options['allow-sensitive-context']),
+    strictSensitiveContext: Boolean(options['strict-sensitive-context']),
     summary:
       prompt.split(/\s+/).slice(0, 14).join(' ') || DEFAULT_CONTINUE_PROMPT,
   };

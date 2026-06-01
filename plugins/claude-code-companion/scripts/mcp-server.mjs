@@ -77,9 +77,9 @@ const tools = [
         },
         target: {
           type: 'string',
-          enum: ['working_tree', 'branch', 'none'],
+          enum: ['working_tree', 'branch', 'repo', 'none'],
           description:
-            'Delegation target. Use working_tree for uncommitted changes, branch with base for base...HEAD, and none for prompt-only diagnosis, planning, or research.',
+            'Delegation target. Use working_tree for uncommitted changes, branch with base for base...HEAD, repo for full-repository review, and none for prompt-only diagnosis, planning, or research.',
         },
         base: {
           type: 'string',
@@ -115,10 +115,10 @@ const tools = [
           description:
             'Optional Claude Code max-budget-usd guard. No dollar budget is set by default.',
         },
-        allow_sensitive_context: {
+        strict_sensitive_context: {
           type: 'boolean',
           description:
-            'Explicitly override default outbound secret-like context blocking. Use only when the user has approved sending that context to Claude.',
+            'Block before calling Claude when heuristic secret-like context is detected. Off by default to keep delegation low-friction.',
         },
         background: {
           type: 'boolean',
@@ -235,15 +235,20 @@ function pushSharedRuntimeArgs(args, input = {}) {
   pushArg(args, 'effort', input.effort);
   pushArg(args, 'timeout-ms', input.timeout_ms);
   pushArg(args, 'max-budget-usd', input.max_budget_usd);
-  pushArg(args, 'allow-sensitive-context', input.allow_sensitive_context);
+  pushArg(args, 'strict-sensitive-context', input.strict_sensitive_context);
   pushArg(args, 'background', input.background);
 }
 
 function pushReviewTargetArgs(args, input = {}) {
+  if (input.target === 'none') {
+    throw new Error(
+      'Review delegations do not use target "none"; use target "repo" for full-repository review or target "working_tree" for current changes.',
+    );
+  }
   pushArg(args, 'base', input.base);
   if (input.target === 'working_tree') pushArg(args, 'scope', 'working-tree');
   if (input.target === 'branch') pushArg(args, 'scope', 'branch');
-  if (input.target === 'none') pushArg(args, 'scope', 'repo');
+  if (input.target === 'repo') pushArg(args, 'scope', 'repo');
 }
 
 function reviewFocusText(input = {}) {
@@ -374,7 +379,8 @@ function promptText(name, input = {}) {
     return [
       'Stay in this Codex session and delegate a read-only second-model review to Claude Code.',
       'Call the single `claude_code` tool with `action: "delegate"`, `kind: "review"`, `target: "working_tree"`, and `background: true` unless the diff is tiny.',
-      'Do not set `allow_sensitive_context` unless the user explicitly approves sending secret-like context to Claude.',
+      'For a full-repository review, use `target: "repo"`.',
+      'Leave `strict_sensitive_context` unset unless the user explicitly wants heuristic secret-like context to block the run.',
       input.focus ? `Focus on: ${input.focus}.` : '',
       'When the job finishes, fetch the result through `claude_code` with `action: "result"`, then present findings by severity and include the Claude session id. Do not edit files until the user asks.',
     ]
@@ -389,6 +395,7 @@ function promptText(name, input = {}) {
       input.base
         ? `Use target "branch" with base ref ${input.base}.`
         : 'Use target "working_tree" unless the user names a base branch.',
+      'For a full-repository adversarial review, use target "repo".',
       input.focus
         ? `Challenge this focus area: ${input.focus}.`
         : 'Focus on hidden assumptions, rollback, data loss, auth, concurrency, and scope risk.',

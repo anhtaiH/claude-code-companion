@@ -19,6 +19,22 @@ function formatFinding(finding) {
     .join('\n');
 }
 
+function formatCompanionHealth(result) {
+  const companion = result.companion;
+  if (!companion && !result.parseError && !result.warnings?.length) return [];
+
+  const parts = [];
+  if (companion?.resultKind) parts.push(companion.resultKind);
+  if (companion?.rawOutput) parts.push(`raw output ${companion.rawOutput}`);
+  if (companion?.model) parts.push(`model ${companion.model}`);
+  if (companion?.sensitiveContext === 'warned')
+    parts.push('sensitive context warning');
+  if (companion?.outputRedactions?.length) parts.push('output redacted');
+  if (result.parseError) parts.push(`parse fallback: ${result.parseError}`);
+  if (!parts.length) return [];
+  return ['', `Companion: ${parts.join('; ')}.`];
+}
+
 export function renderSetup(report) {
   const lines = [
     '# Claude Code Companion Setup',
@@ -33,6 +49,8 @@ export function renderSetup(report) {
     `- workspace: ${report.workspaceRoot}`,
     `- default model: ${report.defaults.model}`,
     `- default effort: ${report.defaults.effort}`,
+    `- default timeout: ${Math.round((report.policy?.timeoutMs ?? 0) / 60000)} minutes`,
+    `- sensitive context: ${report.policy?.sensitiveContext ?? 'warn'}`,
     `- subagents: ${report.defaults.subagents.join(', ')}`,
   ];
   if (report.nextSteps.length) {
@@ -69,6 +87,7 @@ export function renderReviewResult(result) {
       ...review.next_steps.map((step) => `- ${step}`),
     );
   }
+  lines.push(...formatCompanionHealth(result));
   if (result.sessionId) {
     lines.push('', `Resume in Claude Code: claude -r ${result.sessionId}`);
   }
@@ -77,6 +96,7 @@ export function renderReviewResult(result) {
 
 export function renderTaskResult(result) {
   const lines = ['# Claude Code Task', '', result.rawOutput || '(no output)'];
+  lines.push(...formatCompanionHealth(result));
   if (result.sessionId)
     lines.push('', `Resume in Claude Code: claude -r ${result.sessionId}`);
   return `${lines.join('\n')}\n`;
