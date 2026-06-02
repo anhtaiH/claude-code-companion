@@ -504,7 +504,10 @@ async function executeReviewRun(request) {
   const degraded = !parsed.parsed || claude.status !== 0;
 
   return {
-    exitStatus: claude.status,
+    // Any degraded review exits non-zero so it is never mistaken for a healthy
+    // pass, matching the diff-error path. A meaningful Claude code (124 timeout,
+    // 2 failure) is preserved; a parse fallback on a clean exit becomes 1.
+    exitStatus: claude.status || (degraded ? 1 : 0),
     rendered: renderReviewResult({
       reviewName,
       targetLabel: target.label,
@@ -700,7 +703,9 @@ async function executeTaskRun(request) {
   };
 
   return {
-    exitStatus: claude.status,
+    // Mirror the review path: a degraded task (empty output) exits non-zero so
+    // ok and the exit code agree; a real Claude failure code is preserved.
+    exitStatus: claude.status || (degraded ? 1 : 0),
     rendered: renderTaskResult(payload),
     payload,
     sessionId: claude.sessionId,

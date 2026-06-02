@@ -436,8 +436,10 @@ test('malformed review output becomes needs-attention', () => {
     { env },
   );
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.degraded, true);
   assert.equal(payload.review.verdict, 'needs-attention');
   assert.match(payload.review.summary, /could not be parsed/i);
   assert.equal(payload.rawOutput, 'not-json');
@@ -1200,6 +1202,9 @@ test('background task completes and result is fetched without transcript recover
   assert.equal(result.status, 0, result.stderr);
   const resultPayload = JSON.parse(result.stdout);
   assert.equal(resultPayload.result.rawOutput, 'Handled task');
+  assert.equal(resultPayload.ok, true);
+  assert.equal(resultPayload.kind, 'result');
+  assert.equal(resultPayload.answer, 'Handled task');
 });
 
 test('background result can be fetched by job id after cwd drift', () => {
@@ -1284,6 +1289,7 @@ test('exception-failed background jobs persist a failed result', () => {
   );
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
   assert.equal(payload.job.status, 'failed');
   assert.equal(payload.result.companion.resultKind, 'failed-review');
   assert.match(payload.result.review.summary, /failed before producing a result/);
@@ -2022,7 +2028,7 @@ test('malformed review is reported as not-ok and degraded', () => {
     { env },
   );
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ok, false);
   assert.equal(payload.degraded, true);
@@ -2207,4 +2213,65 @@ test('cancel on an already-finished job does not relabel it', () => {
   assert.equal(payload.status, 'completed');
   assert.equal(payload.killed, false);
   assert.match(payload.note, /nothing to cancel/);
+});
+
+test('a failed review diff degrades to nonzero without invoking Claude', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--base', 'no-such-ref', '--json'],
+    { env },
+  );
+
+  // Same exit code / ok shape as the malformed-parse degrade: never a
+  // confident verdict on a diff that could not be computed.
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.degraded, true);
+  assert.equal(payload.kind, 'review');
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('cancel for an unknown job id reports an error and exits nonzero', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'cancel', '--cwd', repo, 'task-zzz-zzzzzz', '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.kind, 'cancel');
+  assert.match(payload.error, /No Claude Code Companion job matching/);
+});
+
+test('result with no job and no reference stays a non-error empty response', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.job, null);
+  assert.equal(payload.result, null);
 });

@@ -55,13 +55,18 @@ Every result is JSON with a small, stable envelope:
   diff error, or a failed background job). Check `ok` before trusting `verdict`
   or `answer`.
 - `degraded: true` marks a result the model did not fully produce.
-- `kind` identifies the payload (`review`, `task`, `setup`, `status`,
-  `result`, `cancel`, `queued`).
+- `kind` identifies the payload: a delegation echoes its kind (`review`,
+  `adversarial-review`, `diagnose`, `plan`, `research`, optionally with a
+  `-resume` suffix); lifecycle calls use `setup`, `status`, `result`, `cancel`,
+  or `queued`.
 - `answer` is the single best string to relay; reviews also carry structured
   `review.verdict` and `review.findings`.
 
-A failed lifecycle lookup (unknown `job_id`) returns `ok: false` with an
-`error` and a nonzero exit, so a missing job is never a silent empty success.
+Exit status (MCP `isError`) flags whether the call itself should stop you: a
+not-ready `setup`, an unknown `job_id`, invalid arguments, and a degraded live
+delegation all exit non-zero. Fetching a stored result with `action: "result"`
+always succeeds (exit 0) even when that job failed, so when reading a `result`
+payload, trust `ok` and `degraded` rather than `isError`.
 
 For substantive reviews, diagnosis, research, and planning, start the job in
 the background unless the request is tiny. Poll status, fetch the result, then
