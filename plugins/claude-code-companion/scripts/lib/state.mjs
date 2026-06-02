@@ -291,10 +291,9 @@ export function findJob(workspaceRoot, reference = '') {
   if (!reference) {
     return jobs[0] ?? null;
   }
-  return (
-    jobs.find((job) => job.id === reference || job.id.startsWith(reference)) ??
-    null
-  );
+  // Exact match only. A prefix match could silently resolve a truncated or
+  // mistyped id to the wrong (newest) job, which is worse than a clean miss.
+  return jobs.find((job) => job.id === reference) ?? null;
 }
 
 export function findLatestCompletedTask(workspaceRoot) {

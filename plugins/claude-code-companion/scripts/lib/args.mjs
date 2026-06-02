@@ -52,12 +52,3 @@ export function parseArgs(argv = process.argv.slice(2), config = {}) {
 
   return { options, positionals };
 }
-
-export function readStdinIfPiped() {
-  if (process.stdin.isTTY) return '';
-  try {
-    return process.stdin.read?.() ?? '';
-  } catch {
-    return '';
-  }
-}

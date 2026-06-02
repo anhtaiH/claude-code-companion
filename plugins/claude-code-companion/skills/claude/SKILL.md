@@ -40,11 +40,28 @@ of making the human learn the runtime:
   rollback, auth, data loss, concurrency, or scope creep.
 - Use `kind: "diagnose"`, `kind: "plan"`, or `kind: "research"` for general
   investigation and planning.
-- Use focused kinds such as `test_gap_review`, `spec_audit`,
-  `pr_review_prep`, `release_risk`, `architecture_critique`,
-  `refactor_plan`, `log_diagnose`, `dependency_review`, and
-  `security_review` when the user asks for that specific pass.
+- For a specialist angle (security, tests, release risk, architecture, logs,
+  dependencies, spec, or PR prep), keep the same five kinds and pass the
+  `focus` argument, for example `kind: "review"` with `focus: "auth, secrets"`
+  or `kind: "research"` with `focus: "dependency upgrade risk"`. The read-only
+  specialist subagents run regardless of focus.
 - Use `status`, `result`, and `cancel` actions to manage background jobs.
+
+## Reading The Result
+
+Every result is JSON with a small, stable envelope:
+
+- `ok` is `false` when the run failed or is degraded (timeout, parse failure,
+  diff error, or a failed background job). Check `ok` before trusting `verdict`
+  or `answer`.
+- `degraded: true` marks a result the model did not fully produce.
+- `kind` identifies the payload (`review`, `task`, `setup`, `status`,
+  `result`, `cancel`, `queued`).
+- `answer` is the single best string to relay; reviews also carry structured
+  `review.verdict` and `review.findings`.
+
+A failed lifecycle lookup (unknown `job_id`) returns `ok: false` with an
+`error` and a nonzero exit, so a missing job is never a silent empty success.
 
 For substantive reviews, diagnosis, research, and planning, start the job in
 the background unless the request is tiny. Poll status, fetch the result, then

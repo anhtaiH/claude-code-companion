@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import process from 'node:process';
 import { binaryAvailable, runSync } from './process.mjs';
-import { hasSecretLikeText } from './safety.mjs';
 
 const READ_ONLY_TOOLS = 'Read,Glob,Grep,Bash,Agent';
 const READ_ONLY_ALLOWED_TOOLS =
@@ -21,7 +20,6 @@ const AGENT_ALLOWED_TOOLS = [
   'Bash(git show:*)',
 ];
 const AGENT_DISALLOWED_TOOLS = ['Edit', 'Write'];
-export { hasSecretLikeText };
 
 export function getClaudeAvailability(cwd) {
   const availability = binaryAvailable('claude', ['--version'], { cwd });
@@ -47,6 +45,25 @@ export function getClaudeAvailability(cwd) {
     compatibility:
       supported === null ? 'unknown' : supported ? 'supported' : 'unsupported',
   };
+}
+
+// Pre-flight check run before a delegation so a missing or too-old Claude CLI
+// produces an actionable message instead of a raw `spawnSync claude ENOENT` or
+// a confusing partial run. Auth is intentionally not checked here: that is a
+// separate, recoverable failure surfaced by setup and by Claude itself.
+export function ensureClaudeReady(cwd) {
+  const claude = getClaudeAvailability(cwd);
+  if (!claude.available) {
+    throw new Error(
+      'Claude Code CLI was not found on PATH. Run `$claude setup` for remediation, then retry.',
+    );
+  }
+  if (claude.supported === false) {
+    throw new Error(
+      `Claude Code CLI ${claude.version ?? ''} is older than the required ${claude.minimumVersion}. Update Claude Code and run \`$claude setup\`.`,
+    );
+  }
+  return claude;
 }
 
 export function getClaudeDefaults() {
@@ -358,6 +375,30 @@ export function runClaudePrint(cwd, prompt, options = {}) {
     };
   }
 
+  if (result.error?.code === 'ENOENT') {
+    return {
+      ok: false,
+      status: 127,
+      error:
+        'Claude Code CLI was not found on PATH. Run `$claude setup` for remediation, then retry.',
+      stdout: result.stdout,
+      stderr: result.stderr,
+      raw: null,
+    };
+  }
+
+  if (result.error?.code === 'ENOBUFS') {
+    return {
+      ok: false,
+      status: 1,
+      error:
+        'Claude produced more than 64MB of output. Narrow the review target or task scope and retry.',
+      stdout: result.stdout,
+      stderr: result.stderr,
+      raw: null,
+    };
+  }
+
   const parsed = parseClaudeOutput(result.stdout);
   const raw = parsed.raw;
   const parseError = parsed.parseError;
@@ -473,7 +514,7 @@ export function normalizeReviewPayload(value) {
 
   return {
     parsed: {
-      verdict: parsed.verdict,
+      verdict: clampVerdict(parsed.verdict),
       summary: parsed.summary,
       findings: findings.map((finding, index) =>
         normalizeFinding(finding, index),
@@ -491,7 +532,7 @@ function normalizeFinding(finding, index) {
   const locationMatch = location.match(/^(.+?)(?::(\d+))?$/);
   const parsedLine = Number.parseInt(locationMatch?.[2] ?? '', 10);
   return {
-    severity: typeof finding?.severity === 'string' ? finding.severity : 'low',
+    severity: clampSeverity(finding?.severity),
     title:
       typeof finding?.title === 'string'
         ? finding.title
@@ -520,6 +561,69 @@ function normalizeFinding(finding, index) {
 }
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];
+const SEVERITY_ALIASES = {
+  blocker: 'critical',
+  p0: 'critical',
+  fatal: 'critical',
+  crit: 'critical',
+  severe: 'critical',
+  error: 'high',
+  major: 'high',
+  warn: 'medium',
+  warning: 'medium',
+  moderate: 'medium',
+  minor: 'low',
+  info: 'low',
+  informational: 'low',
+  nit: 'low',
+  note: 'low',
+  trivial: 'low',
+  suggestion: 'low',
+};
+
+// Claude is asked for an enum severity via --json-schema, but the non-schema
+// (grouped/markdown/task) paths can still surface off-enum strings. Map common
+// synonyms and clamp anything unknown to 'low' so a consuming agent that filters
+// on the four canonical severities never silently drops a finding.
+function clampSeverity(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (SEVERITIES.includes(normalized)) return normalized;
+  return SEVERITY_ALIASES[normalized] ?? 'low';
+}
+
+const VERDICTS = [
+  'approve',
+  'approve-with-nits',
+  'needs-attention',
+  'changes-needed',
+];
+const VERDICT_ALIASES = {
+  approved: 'approve',
+  lgtm: 'approve',
+  'approve with nits': 'approve-with-nits',
+  'approve-with-nit': 'approve-with-nits',
+  nits: 'approve-with-nits',
+  'needs attention': 'needs-attention',
+  'changes needed': 'changes-needed',
+  'request-changes': 'changes-needed',
+  'request changes': 'changes-needed',
+  reject: 'changes-needed',
+  block: 'changes-needed',
+  blocked: 'changes-needed',
+};
+
+// Clamp a passthrough verdict to the schema enum. Unknown verdicts become
+// 'needs-attention' (a neutral, non-approving signal) so a malformed verdict is
+// never mistaken for a confident pass.
+function clampVerdict(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (VERDICTS.includes(normalized)) return normalized;
+  return VERDICT_ALIASES[normalized] ?? 'needs-attention';
+}
 
 function normalizeGroupedReview(parsed) {
   const findings = [];

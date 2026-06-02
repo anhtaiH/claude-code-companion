@@ -50,29 +50,22 @@ $claude result <job-id>
 $claude cancel <job-id>
 ```
 
-Useful passes:
+The passes:
 
 - review
 - adversarial review
 - diagnose
 - plan
 - research
-- test gap review
-- spec audit
-- PR review prep
-- release risk
-- architecture critique
-- refactor plan
-- log diagnose
-- dependency review
-- security review
 
-You can add details in plain English, for example:
+For a specialist angle — security, tests, release risk, architecture, logs,
+dependencies, spec, or PR prep — use one of those five and describe the focus in
+plain English. The read-only specialist subagents run regardless.
 
 ```text
-$claude test gap review this branch, focus the new billing tests, run in background
-$claude security review the auth changes against main
-$claude log diagnose this CI failure: <paste logs>
+$claude review the auth changes against main, focus on secrets and rollback
+$claude research the dependency upgrade risk in this branch, run in background
+$claude diagnose this CI failure: <paste logs>
 ```
 
 ## How It Works

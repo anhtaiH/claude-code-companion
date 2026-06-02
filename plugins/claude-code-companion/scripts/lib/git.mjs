@@ -30,6 +30,32 @@ export function ensureGitRepository(cwd = process.cwd()) {
   }
 }
 
+function refExists(cwd, ref) {
+  return runGit(cwd, ['rev-parse', '--verify', '--quiet', ref]).ok;
+}
+
+// Resolve the base branch for a `branch` scoped review from refs that actually
+// exist, instead of assuming `main`. A repo on `master`/`develop` would
+// otherwise diff against a nonexistent `main`, review nothing, and still emit a
+// confident verdict. Returns null when no conventional base can be found so the
+// caller can fail loudly rather than silently review an empty diff.
+function resolveDefaultBaseRef(cwd) {
+  const originHead = runGit(cwd, [
+    'symbolic-ref',
+    '--quiet',
+    '--short',
+    'refs/remotes/origin/HEAD',
+  ]);
+  if (originHead.ok) {
+    const ref = originHead.stdout.trim();
+    if (ref && refExists(cwd, ref)) return ref;
+  }
+  for (const candidate of ['main', 'master', 'develop', 'trunk']) {
+    if (refExists(cwd, candidate)) return candidate;
+  }
+  return null;
+}
+
 export function resolveReviewTarget(cwd, options = {}) {
   ensureGitRepository(cwd);
   if (options.base) {
@@ -53,7 +79,12 @@ export function resolveReviewTarget(cwd, options = {}) {
   }
 
   if (scope === 'branch') {
-    const baseRef = 'main';
+    const baseRef = resolveDefaultBaseRef(cwd);
+    if (!baseRef) {
+      throw new Error(
+        'Could not resolve a base branch for branch review (looked for origin/HEAD, main, master, develop, trunk). Pass --base <ref> explicitly.',
+      );
+    }
     return {
       mode: 'branch',
       baseRef,

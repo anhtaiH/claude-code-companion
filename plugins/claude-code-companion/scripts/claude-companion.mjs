@@ -7,6 +7,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from './lib/args.mjs';
 import {
+  ensureClaudeReady,
   getClaudeAuthStatus,
   getClaudeAvailability,
   getClaudeDefaults,
@@ -14,6 +15,7 @@ import {
   readJsonSchema,
   runClaudePrint,
 } from './lib/claude.mjs';
+import { isValidTaskKind, workflowForTaskKind } from './lib/kinds.mjs';
 import {
   collectRepoInstructions,
   collectReviewContext,
@@ -89,6 +91,21 @@ function output(payload, rendered, asJson) {
   process.stdout.write(
     asJson ? `${JSON.stringify(payload, null, 2)}\n` : rendered,
   );
+}
+
+// Validate --timeout-ms up front. An unparseable, negative, fractional, or zero
+// value would otherwise reach spawnSync and either throw an opaque RangeError
+// (foreground) or be serialized to null and silently disable the timeout
+// (background). Reject it here with a message that names the offending flag.
+function coerceTimeoutMs(raw) {
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `--timeout-ms must be a positive integer number of milliseconds; received "${raw}".`,
+    );
+  }
+  return value;
 }
 
 function resolveCwd(options = {}) {
@@ -306,13 +323,18 @@ function fallbackReview(summary) {
 
 function exceptionFailurePayload(job, request, errorMessage) {
   if (job.jobClass === 'review') {
+    const review = fallbackReview(
+      `Claude ${job.kind} failed before producing a result: ${errorMessage}`,
+    );
     return {
+      ok: false,
+      kind: request.kind ?? job.kind,
+      degraded: true,
+      answer: review.summary,
       reviewName: request.reviewName ?? 'Review',
       targetLabel: request.summary ?? 'review',
       sessionId: null,
-      review: fallbackReview(
-        `Claude ${job.kind} failed before producing a result: ${errorMessage}`,
-      ),
+      review,
       parseError: null,
       rawOutput: errorMessage,
       warnings: [],
@@ -330,6 +352,10 @@ function exceptionFailurePayload(job, request, errorMessage) {
   }
 
   return {
+    ok: false,
+    kind: request.kind ?? job.kind,
+    degraded: true,
+    answer: errorMessage,
     rawOutput: errorMessage,
     sessionId: null,
     companion: {
@@ -374,12 +400,77 @@ function reviewCompanionHealth({ parsed, claude, target, sensitiveContext }) {
   };
 }
 
+function reviewAnswer(review) {
+  const count = review.findings.length;
+  const suffix = count
+    ? ` (${count} finding${count === 1 ? '' : 's'})`
+    : '';
+  return `${review.verdict}: ${review.summary}${suffix}`;
+}
+
+function degradedReviewResult(request, target, context) {
+  const reviewName = request.reviewName;
+  const review = fallbackReview(
+    `Could not compute the review diff for ${target.label}: ${context.diffError}. No review was performed; pass an explicit base ref or verify the branch exists.`,
+  );
+  const companion = {
+    resultKind: 'diff-error',
+    rawOutput: 'preserved',
+    targetScope: target.mode,
+    targetLabel: target.label,
+    parser: 'not-run',
+    parseError: null,
+    sensitiveContext: 'unknown',
+    model: null,
+  };
+  return {
+    exitStatus: 1,
+    rendered: renderReviewResult({
+      reviewName,
+      targetLabel: target.label,
+      sessionId: null,
+      review,
+      parseError: null,
+      warnings: [],
+      companion,
+    }),
+    payload: {
+      ok: false,
+      kind: request.kind,
+      degraded: true,
+      answer: reviewAnswer(review),
+      reviewName,
+      targetLabel: target.label,
+      sessionId: null,
+      review,
+      parseError: null,
+      rawOutput: context.diffError,
+      warnings: [],
+      companion,
+      context: {
+        repoRoot: context.repoRoot,
+        branch: context.branch,
+        shortstat: context.shortstat,
+        diffError: context.diffError,
+        untracked: context.untracked.names,
+      },
+      claude: null,
+    },
+    sessionId: null,
+    summary: review.summary,
+  };
+}
+
 async function executeReviewRun(request) {
+  ensureClaudeReady(request.cwd);
   const target = resolveReviewTarget(request.cwd, {
     base: request.base,
     scope: request.scope,
   });
   const context = collectReviewContext(request.cwd, target);
+  if (context.diffError) {
+    return degradedReviewResult(request, target, context);
+  }
   const schema = readJsonSchema(REVIEW_SCHEMA_PATH);
   const reviewName = request.reviewName;
   const sensitiveContext = blockSensitiveContext(
@@ -410,6 +501,7 @@ async function executeReviewRun(request) {
     sensitiveContext,
   });
   const warnings = warningForSensitiveContext(sensitiveContext);
+  const degraded = !parsed.parsed || claude.status !== 0;
 
   return {
     exitStatus: claude.status,
@@ -423,6 +515,10 @@ async function executeReviewRun(request) {
       companion,
     }),
     payload: {
+      ok: !degraded,
+      kind: request.kind,
+      degraded,
+      answer: reviewAnswer(review),
       reviewName,
       targetLabel: target.label,
       sessionId: claude.sessionId,
@@ -453,66 +549,6 @@ async function executeReviewRun(request) {
     sessionId: claude.sessionId,
     summary: review.summary,
   };
-}
-
-const TASK_WORKFLOWS = {
-  diagnose: [
-    'Diagnose mode: identify the likely root cause, the evidence for it, and the narrowest next verification step.',
-    'Use log-diagnostician for logs or stack traces. Use codebase-researcher when the relevant code path is unclear.',
-    'Do not propose broad rewrites before ruling out configuration, environment, and recent-change causes.',
-  ],
-  plan: [
-    'Plan mode: produce a concrete implementation plan with ordering, verification, risks, and rollback or escape hatches when relevant.',
-    'Use codebase-researcher first for unfamiliar areas and architecture-critic for design tradeoffs.',
-    'Prefer a plan Codex can execute without follow-up questions.',
-  ],
-  research: [
-    'Research mode: map the relevant files, conventions, and facts Codex should know before acting.',
-    'Separate observed facts from inferences and cite file paths or command evidence when available.',
-  ],
-  test_gap_review: [
-    'Test-gap mode: find missing or weak tests tied to observable behavior and regression risk.',
-    'Use test-gap-reviewer and return the smallest high-signal tests Codex should add or run.',
-  ],
-  spec_audit: [
-    'Spec-audit mode: compare implementation against the requested spec, task, or acceptance criteria.',
-    'Call out mismatches, ambiguous requirements, and evidence gaps. Do not invent requirements.',
-  ],
-  pr_review_prep: [
-    'PR-prep mode: predict reviewer questions, unclear tradeoffs, local surprises, and QA gaps.',
-    'Return review focus and concise PR/QA guidance, not a file-by-file diff summary.',
-  ],
-  release_risk: [
-    'Release-risk mode: map likely regressions, rollout and rollback concerns, operational checks, and smoke tests.',
-    'Use release-risk-reviewer and keep recommendations practical.',
-  ],
-  architecture_critique: [
-    'Architecture-critique mode: challenge coupling, ownership boundaries, abstractions, and simpler alternatives.',
-    'Use architecture-critic and distinguish must-fix design problems from acceptable tradeoffs.',
-  ],
-  refactor_plan: [
-    'Refactor-plan mode: break the refactor into safe, reviewable steps with verification after each step.',
-    'Prefer behavior-preserving moves before semantic changes.',
-  ],
-  log_diagnose: [
-    'Log-diagnose mode: parse the failure signal, identify likely cause, and suggest the next command or inspection.',
-    'Avoid broad speculation when the log already points to a concrete failing component.',
-  ],
-  dependency_review: [
-    'Dependency-review mode: check compatibility, version drift, transitive risk, migration requirements, and rollback options.',
-    'Use dependency evidence from manifests and lockfiles when available.',
-  ],
-  security_review: [
-    'Security-review mode: inspect auth, authorization, privacy, data exposure, secret handling, injection, and unsafe defaults.',
-    'Use security-reviewer and cite the boundary where the risk appears.',
-  ],
-};
-
-function workflowForTaskKind(kind) {
-  const baseKind = String(kind ?? '').replace(/-resume$/, '');
-  return TASK_WORKFLOWS[baseKind] ?? [
-    'General task mode: inspect only what is needed, synthesize findings for Codex, and keep the result actionable.',
-  ];
 }
 
 function buildTaskPrompt(cwd, prompt, kind) {
@@ -608,6 +644,7 @@ function taskSensitiveSources(task, request) {
 }
 
 async function executeTaskRun(request) {
+  ensureClaudeReady(request.cwd);
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   const task = buildTaskPrompt(
     workspaceRoot,
@@ -632,7 +669,12 @@ async function executeTaskRun(request) {
     claude.error ?? claude.stderr?.trim() ?? `exit ${claude.status}`,
   );
 
+  const degraded = claude.status !== 0 || !resultText.trim();
   const payload = {
+    ok: !degraded,
+    kind: request.kind,
+    degraded,
+    answer: resultText || errorText,
     rawOutput: resultText || errorText,
     sessionId: claude.sessionId,
     companion: {
@@ -731,27 +773,44 @@ async function runForegroundJob(job, request, runner, asJson) {
   }
 }
 
-function spawnDetachedWorker(cwd, jobId) {
-  const child = spawn(
-    process.execPath,
-    [
-      fileURLToPath(import.meta.url),
-      'job-worker',
-      '--cwd',
-      cwd,
-      '--job-id',
-      jobId,
-    ],
-    {
-      cwd,
-      env: process.env,
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    },
-  );
-  child.unref();
-  return child;
+function spawnDetachedWorker(cwd, jobId, logFile) {
+  // Send the detached worker's stdout/stderr to the job log so an uncatchable
+  // death (OOM, SIGKILL, a crash before the try/catch) leaves a trace that
+  // `status` surfaces, instead of only a generic "worker is no longer running".
+  let stdio = 'ignore';
+  let logFd = null;
+  if (logFile) {
+    try {
+      logFd = fs.openSync(logFile, 'a');
+      stdio = ['ignore', logFd, logFd];
+    } catch {
+      stdio = 'ignore';
+    }
+  }
+  try {
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(import.meta.url),
+        'job-worker',
+        '--cwd',
+        cwd,
+        '--job-id',
+        jobId,
+      ],
+      {
+        cwd,
+        env: process.env,
+        detached: true,
+        stdio,
+        windowsHide: true,
+      },
+    );
+    child.unref();
+    return child;
+  } finally {
+    if (logFd !== null) fs.closeSync(logFd);
+  }
 }
 
 function enqueueBackgroundJob(cwd, job, request, asJson) {
@@ -759,19 +818,23 @@ function enqueueBackgroundJob(cwd, job, request, asJson) {
   appendLogLine(job.logFile, `Queued ${job.kind}.`);
   writeJobFile(job.workspaceRoot, job.id, queued);
   upsertJob(job.workspaceRoot, queued);
-  const child = spawnDetachedWorker(cwd, job.id);
+  const child = spawnDetachedWorker(cwd, job.id, job.logFile);
   const next = { ...queued, pid: child.pid ?? null };
   writeJobFile(job.workspaceRoot, job.id, next);
   upsertJob(job.workspaceRoot, next);
 
+  const title =
+    job.jobClass === 'review'
+      ? `Claude ${request.reviewName}`
+      : 'Claude Code Task';
   const payload = {
+    ok: true,
+    kind: 'queued',
     jobId: job.id,
     workspaceRoot: job.workspaceRoot,
-    title:
-      job.jobClass === 'review'
-        ? `Claude ${request.reviewName}`
-        : 'Claude Code Task',
+    title,
     status: 'queued',
+    answer: `${title} started in the background as ${job.id}. Fetch it with action result and job_id ${job.id}.`,
     logFile: job.logFile,
   };
   output(payload, renderQueued(payload), asJson);
@@ -792,12 +855,16 @@ function parseCommonOptions(argv, extra = {}) {
     booleanOptions: [
       'json',
       'background',
-      'wait',
       'all',
       'resume-last',
       'resume',
       'fresh',
       'strict-sensitive-context',
+      // Deprecated no-op kept for backward compatibility: warn-and-continue is
+      // the default, so this flag is accepted but does nothing. Declared here so
+      // it parses as a recognized boolean rather than silently consuming the
+      // following token.
+      'allow-sensitive-context',
     ],
     aliasMap: { C: 'cwd', m: 'model', ...extra.aliasMap },
   });
@@ -807,7 +874,18 @@ async function handleSetup(argv) {
   const { options } = parseCommonOptions(argv);
   const cwd = resolveCwd(options);
   const report = buildSetupReport(cwd);
-  output(report, renderSetup(report), Boolean(options.json));
+  const payload = {
+    ok: report.ready,
+    kind: 'setup',
+    answer: report.ready
+      ? 'Claude Code Companion is ready.'
+      : `Claude Code Companion is not ready. ${report.nextSteps.join(' ')}`.trim(),
+    ...report,
+  };
+  output(payload, renderSetup(report), Boolean(options.json));
+  // Exit non-zero when not ready so a Codex agent that calls setup and checks
+  // isError does not proceed to delegate against a broken environment.
+  if (!report.ready) process.exitCode = 1;
 }
 
 async function handleReview(argv, reviewName) {
@@ -831,7 +909,7 @@ async function handleReview(argv, reviewName) {
     scope,
     model: options.model ?? null,
     effort: options.effort ?? null,
-    timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
+    timeoutMs: coerceTimeoutMs(options['timeout-ms']),
     maxBudgetUsd: options['max-budget-usd'] ?? null,
     strictSensitiveContext: Boolean(options['strict-sensitive-context']),
     focusText,
@@ -845,10 +923,7 @@ async function handleReview(argv, reviewName) {
   await runForegroundJob(job, request, executeReviewRun, Boolean(options.json));
 }
 
-function readTaskPrompt(cwd, options, positionals) {
-  if (options['prompt-file']) {
-    return fs.readFileSync(path.resolve(cwd, options['prompt-file']), 'utf8');
-  }
+function readTaskPrompt(positionals) {
   return positionals.join(' ').trim() || readPipedStdin().trim();
 }
 
@@ -860,7 +935,6 @@ async function handleTask(argv) {
       'timeout-ms',
       'max-budget-usd',
       'cwd',
-      'prompt-file',
       'kind',
     ],
     booleanOptions: [
@@ -870,10 +944,16 @@ async function handleTask(argv) {
       'resume',
       'fresh',
       'strict-sensitive-context',
+      'allow-sensitive-context',
     ],
     aliasMap: { C: 'cwd', m: 'model' },
   });
   rejectWriteOptions(options);
+  if (options.kind !== undefined && !isValidTaskKind(options.kind)) {
+    throw new Error(
+      `Unknown task kind "${options.kind}". Use diagnose, plan, or research.`,
+    );
+  }
   const cwd = resolveCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const resumeLast = Boolean(options['resume-last'] || options.resume);
@@ -884,7 +964,7 @@ async function handleTask(argv) {
     throw new Error(
       'No completed Claude task session found for this workspace.',
     );
-  const prompt = readTaskPrompt(cwd, options, positionals);
+  const prompt = readTaskPrompt(positionals);
   if (!prompt && !resumeLast)
     throw new Error('Provide a prompt or use --resume-last.');
   const request = {
@@ -897,7 +977,7 @@ async function handleTask(argv) {
     resumeSessionId: latest?.sessionId ?? null,
     model: options.model ?? null,
     effort: options.effort ?? null,
-    timeoutMs: Number(options['timeout-ms'] ?? DEFAULT_TIMEOUT_MS),
+    timeoutMs: coerceTimeoutMs(options['timeout-ms']),
     maxBudgetUsd: options['max-budget-usd'] ?? null,
     strictSensitiveContext: Boolean(options['strict-sensitive-context']),
     summary:
@@ -938,6 +1018,19 @@ function resolveWorkspaceForReference(cwd, reference) {
   return findIndexedWorkspaceRoot(reference) ?? workspaceRoot;
 }
 
+// A reference was supplied but no such job exists in this workspace or the
+// global index. Report it as an explicit error (exit 1) so a Codex agent does
+// not mistake a typo'd or pruned id for an empty-but-successful result.
+function outputJobNotFound(kind, reference, workspaceRoot, asJson) {
+  const message = `No Claude Code Companion job matching "${reference}". It may have been pruned or the id is wrong; use action status to list jobs.`;
+  output(
+    { ok: false, kind, error: message, reference, workspaceRoot },
+    `${message}\n`,
+    asJson,
+  );
+  process.exitCode = 1;
+}
+
 function handleStatus(argv) {
   const { options, positionals } = parseCommonOptions(argv);
   const cwd = resolveCwd(options);
@@ -950,7 +1043,13 @@ function handleStatus(argv) {
         0,
         options.all ? 50 : 10,
       );
+  if (reference && !jobs.length) {
+    outputJobNotFound('status', reference, workspaceRoot, Boolean(options.json));
+    return;
+  }
   const report = {
+    ok: true,
+    kind: 'status',
     workspaceRoot,
     jobs: jobs.map((job) => ({
       ...job,
@@ -972,9 +1071,23 @@ function handleResult(argv) {
       : sortJobsNewestFirst(listJobs(workspaceRoot)).find(
           (entry) => !['queued', 'running'].includes(entry.status),
         )) ?? null;
+  if (reference && !job) {
+    outputJobNotFound('result', reference, workspaceRoot, Boolean(options.json));
+    return;
+  }
   const result = job ? readResultFile(workspaceRoot, job.id) : null;
+  const ok = Boolean(
+    job && result && (result.ok ?? job.status === 'completed'),
+  );
   output(
-    { workspaceRoot, job, result },
+    {
+      ok,
+      kind: 'result',
+      workspaceRoot,
+      job,
+      result,
+      answer: result?.answer ?? null,
+    },
     renderStoredResult({ job, result }),
     Boolean(options.json),
   );
@@ -992,7 +1105,28 @@ function handleCancel(argv) {
       : sortJobsNewestFirst(listJobs(workspaceRoot)).find((entry) =>
           ['queued', 'running'].includes(entry.status),
         )) ?? null;
-  if (!job) throw new Error('No cancellable Claude Code Companion job found.');
+  if (!job) {
+    if (reference) {
+      outputJobNotFound('cancel', reference, workspaceRoot, Boolean(options.json));
+      return;
+    }
+    throw new Error('No cancellable Claude Code Companion job found.');
+  }
+  if (!['queued', 'running'].includes(job.status)) {
+    output(
+      {
+        ok: true,
+        kind: 'cancel',
+        jobId: job.id,
+        killed: false,
+        status: job.status,
+        note: `Job already ${job.status}; nothing to cancel.`,
+      },
+      `Job ${job.id} already ${job.status}; nothing to cancel.\n`,
+      Boolean(options.json),
+    );
+    return;
+  }
   const killed = terminateProcessTree(job.pid);
   const next = {
     ...job,
@@ -1005,7 +1139,7 @@ function handleCancel(argv) {
   writeJobFile(workspaceRoot, job.id, next);
   upsertJob(workspaceRoot, next);
   output(
-    { jobId: job.id, killed, status: 'cancelled' },
+    { ok: true, kind: 'cancel', jobId: job.id, killed, status: 'cancelled' },
     `Cancelled ${job.id}.\n`,
     Boolean(options.json),
   );

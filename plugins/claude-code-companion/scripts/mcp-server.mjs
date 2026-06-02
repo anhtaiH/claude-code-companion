@@ -5,38 +5,11 @@ import path from 'node:path';
 import process from 'node:process';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { ALL_KINDS } from './lib/kinds.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const COMPANION = path.join(SCRIPT_DIR, 'claude-companion.mjs');
 const PLUGIN_ROOT = path.resolve(SCRIPT_DIR, '..');
-const TASK_KIND_PROMPTS = {
-  diagnose:
-    'Diagnose the likely root cause. Use repo context and read-only inspection where helpful.',
-  plan: 'Produce a concise implementation and verification plan.',
-  research:
-    'Research the repository context and report the findings Codex should know.',
-  test_gap_review:
-    'Find missing or weak tests for the current work. Focus on observable behavior and regression risk.',
-  spec_audit:
-    'Compare implementation against the supplied spec, task, or acceptance criteria. Call out mismatches.',
-  pr_review_prep:
-    'Prepare for PR review. Identify likely reviewer questions, unclear decisions, and risky diffs.',
-  release_risk:
-    'Map release risks, likely regressions, rollback concerns, and practical smoke checks.',
-  architecture_critique:
-    'Challenge the architecture and design direction. Look for coupling, unclear boundaries, and simpler options.',
-  refactor_plan:
-    'Plan a safe refactor path with small steps, verification points, and rollback-friendly ordering.',
-  log_diagnose:
-    'Diagnose the provided logs, stack traces, CI output, or failing command output.',
-  dependency_review:
-    'Review dependency, framework, or migration changes for compatibility and integration risk.',
-  security_review:
-    'Review for auth, secrets, privacy, data exposure, unsafe defaults, and permission mistakes.',
-};
-const REVIEW_KINDS = ['review', 'adversarial_review'];
-const TASK_KINDS = Object.keys(TASK_KIND_PROMPTS);
-const ALL_KINDS = [...REVIEW_KINDS, ...TASK_KINDS];
 const DANGEROUS_INPUT_KEYS = [
   'write',
   'edit',
@@ -69,7 +42,7 @@ const tools = [
           type: 'string',
           enum: ALL_KINDS,
           description:
-            'Required for action delegate. Use review/adversarial_review for diff review, or a task kind for diagnosis, planning, research, and focused advisory passes.',
+            'Required for action delegate. Use review or adversarial_review for diff review, or diagnose, plan, or research for prompt-driven work. For specialist angles (security, tests, release risk, architecture, logs, dependencies, spec, PR prep) pass the focus argument rather than a separate kind.',
         },
         cwd: {
           type: 'string',
@@ -294,8 +267,10 @@ function reviewFocusText(input = {}) {
 }
 
 function delegatedTaskPrompt(input = {}) {
+  // Per-kind guidance is injected once, by the companion's "## Work Mode"
+  // section (derived from lib/kinds.mjs). This server only forwards the user's
+  // request and focus so the kind prompt is never double-injected.
   const parts = [];
-  if (TASK_KIND_PROMPTS[input.kind]) parts.push(TASK_KIND_PROMPTS[input.kind]);
   if (input.prompt) parts.push(`Request: ${String(input.prompt)}`);
   if (input.focus) parts.push(`Focus: ${input.focus}`);
   if (!parts.length)

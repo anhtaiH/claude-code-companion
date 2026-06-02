@@ -34,15 +34,6 @@ const EXPECTED_KINDS = [
   'diagnose',
   'plan',
   'research',
-  'test_gap_review',
-  'spec_audit',
-  'pr_review_prep',
-  'release_risk',
-  'architecture_critique',
-  'refactor_plan',
-  'log_diagnose',
-  'dependency_review',
-  'security_review',
 ];
 
 const EXPECTED_COMMANDS = {
@@ -52,15 +43,6 @@ const EXPECTED_COMMANDS = {
   diagnose: { action: 'delegate', kind: 'diagnose' },
   plan: { action: 'delegate', kind: 'plan' },
   research: { action: 'delegate', kind: 'research' },
-  'test-gap-review': { action: 'delegate', kind: 'test_gap_review' },
-  'spec-audit': { action: 'delegate', kind: 'spec_audit' },
-  'pr-review-prep': { action: 'delegate', kind: 'pr_review_prep' },
-  'release-risk': { action: 'delegate', kind: 'release_risk' },
-  'architecture-critique': { action: 'delegate', kind: 'architecture_critique' },
-  'refactor-plan': { action: 'delegate', kind: 'refactor_plan' },
-  'log-diagnose': { action: 'delegate', kind: 'log_diagnose' },
-  'dependency-review': { action: 'delegate', kind: 'dependency_review' },
-  'security-review': { action: 'delegate', kind: 'security_review' },
   status: { action: 'status' },
   result: { action: 'result' },
   cancel: { action: 'cancel' },
@@ -192,8 +174,9 @@ test('setup reports unsupported Claude Code versions before green readiness', ()
     { env },
   );
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
   assert.equal(payload.ready, false);
   assert.equal(payload.claude.version, '2.0.0');
   assert.equal(payload.claude.supported, false);
@@ -236,8 +219,9 @@ test('setup reports missing Claude without using real PATH', () => {
     { env },
   );
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
   assert.equal(payload.ready, false);
   assert.equal(payload.claude.available, false);
 });
@@ -1964,4 +1948,263 @@ test('MCP claude_code manages background jobs through the same tool', () => {
   const cancelPayload = JSON.parse(cancelResponse.result.content[0].text);
   assert.equal(statusPayload.jobs[0].id, jobId);
   assert.equal(cancelPayload.status, 'cancelled');
+});
+
+test('invalid --timeout-ms is rejected before Claude is invoked', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  for (const bad of ['abc', '-5', '1.5', '0']) {
+    const result = run(
+      process.execPath,
+      [COMPANION, 'review', '--cwd', repo, '--timeout-ms', bad, '--json'],
+      { env },
+    );
+    assert.notEqual(result.status, 0, `expected failure for ${bad}`);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, false);
+    assert.match(payload.error, /timeout-ms/);
+  }
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('review result carries the ok/kind/answer envelope', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.degraded, false);
+  assert.equal(payload.kind, 'review');
+  assert.match(payload.answer, /changes-needed/);
+});
+
+test('task result carries the ok/kind envelope', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--kind', 'diagnose', '--json', 'inspect'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.kind, 'diagnose');
+  assert.equal(payload.answer, 'Handled task');
+});
+
+test('malformed review is reported as not-ok and degraded', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'malformed' });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.degraded, true);
+  assert.equal(payload.review.verdict, 'needs-attention');
+});
+
+test('unknown task kind is rejected with a clear error', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--kind', 'frobnicate', '--json', 'go'],
+    { env },
+  );
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /Unknown task kind/);
+});
+
+test('delegate fails clearly when Claude Code is not installed', () => {
+  const binDir = makeTempDir();
+  fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { PATH: binDir });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /Claude Code CLI/);
+  assert.match(payload.error, /setup/);
+});
+
+test('branch review resolves the default base when main is absent', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  run('git', ['init', '-b', 'master'], { cwd: repo });
+  run('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+  run('git', ['config', 'user.name', 'Test User'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.js'), 'export const a = 1;\n');
+  run('git', ['add', 'a.js'], { cwd: repo });
+  run('git', ['commit', '-m', 'init'], { cwd: repo });
+  run('git', ['checkout', '-b', 'feature'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.js'), 'export const a = 2;\n');
+  run('git', ['add', 'a.js'], { cwd: repo });
+  run('git', ['commit', '-m', 'change'], { cwd: repo });
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--scope', 'branch', '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.targetLabel, 'changes against master');
+  assert.equal(payload.context.diffError, null);
+  assert.equal(payload.ok, true);
+});
+
+test('branch review without a resolvable base degrades instead of faking a verdict', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  run('git', ['init', '-b', 'wip'], { cwd: repo });
+  run('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+  run('git', ['config', 'user.name', 'Test User'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'a.js'), 'export const a = 1;\n');
+  run('git', ['add', 'a.js'], { cwd: repo });
+  run('git', ['commit', '-m', 'init'], { cwd: repo });
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--scope', 'branch', '--json'],
+    { env },
+  );
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /base branch/);
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('result for an unknown job id reports an error and exits nonzero', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, 'task-zzz-zzzzzz', '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /No Claude Code Companion job matching/);
+});
+
+test('status for an unknown job id reports an error and exits nonzero', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'status', '--cwd', repo, 'task-zzz-zzzzzz', '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /No Claude Code Companion job matching/);
+});
+
+test('off-enum finding severities and verdicts are clamped', () => {
+  const normalized = normalizeReviewPayload(
+    JSON.stringify({
+      verdict: 'approved',
+      summary: 'ok',
+      findings: [
+        { severity: 'blocker', title: 'a', detail: 'b', location: 'a.js:1' },
+        { severity: 'info', title: 'c', detail: 'd', location: 'a.js:2' },
+        { severity: 'whatever', title: 'e', detail: 'f', location: 'a.js:3' },
+      ],
+    }),
+  );
+
+  assert.equal(normalized.parseError, null);
+  assert.equal(normalized.parsed.verdict, 'approve');
+  assert.equal(normalized.parsed.findings[0].severity, 'critical');
+  assert.equal(normalized.parsed.findings[1].severity, 'low');
+  assert.equal(normalized.parsed.findings[2].severity, 'low');
+});
+
+test('cancel on an already-finished job does not relabel it', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const done = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--json', 'quick task'],
+    { env },
+  );
+  assert.equal(done.status, 0, done.stderr);
+
+  const status = run(
+    process.execPath,
+    [COMPANION, 'status', '--cwd', repo, '--json'],
+    { env },
+  );
+  const jobId = JSON.parse(status.stdout).jobs[0].id;
+
+  const cancel = run(
+    process.execPath,
+    [COMPANION, 'cancel', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(cancel.status, 0, cancel.stderr);
+  const payload = JSON.parse(cancel.stdout);
+  assert.equal(payload.status, 'completed');
+  assert.equal(payload.killed, false);
+  assert.match(payload.note, /nothing to cancel/);
 });
