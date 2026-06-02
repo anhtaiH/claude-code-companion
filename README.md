@@ -1,7 +1,8 @@
 # Claude Code Companion
 
-Use Claude Code from inside Codex for review, diagnosis, planning, and research.
-Codex stays in charge; Claude is the side helper.
+Use Claude Code from inside Codex for a read-only second opinion — review,
+diagnosis, planning, and research. Codex stays in charge; Claude is the side
+helper and never edits files.
 
 This is the canonical public repository for the `claude` Codex plugin.
 
@@ -11,9 +12,8 @@ This is the canonical public repository for the `claude` Codex plugin.
 curl -fsSL https://raw.githubusercontent.com/anhtaiH/claude-code-companion/main/install.sh | bash
 ```
 
-Start a new Codex session after installing.
-
-Then ask Codex:
+Start a **new** Codex session (an already-open session caches the old tool
+schema), then:
 
 ```text
 $claude setup
@@ -21,28 +21,26 @@ $claude review this repo
 ```
 
 If Claude Code is not signed in, run `claude auth login` and rerun the
-installer.
+installer. More detail: [docs/INSTALL.md](docs/INSTALL.md).
 
-More detail: [docs/INSTALL.md](docs/INSTALL.md).
+## Use
 
-Updating or reinstalling changes the MCP tool schema only for new Codex
-sessions. After an update, start a fresh Codex session before judging the
-tool surface.
-
-## Usage
-
-Use `$claude` in normal chat:
+Type `$claude` in normal Codex chat. There are five passes:
 
 ```text
 $claude review my current changes
-$claude review the whole repo
 $claude adversarial review against main, focus auth and rollback
 $claude diagnose the failing checkout test
-$claude plan the safest implementation path
+$claude plan the safest path to add billing
 $claude research how auth is wired in this repo
 ```
 
-For background work:
+For a specialist angle — security, tests, release risk, architecture, logs,
+dependencies, spec, or PR prep — pick the closest pass and name the focus in
+plain English (`$claude review the auth changes, focus on secrets`). The
+read-only specialist subagents run either way.
+
+Substantial work can run in the background and return a job id to poll:
 
 ```text
 $claude status
@@ -50,93 +48,68 @@ $claude result <job-id>
 $claude cancel <job-id>
 ```
 
-The passes:
+## Tips
 
-- review
-- adversarial review
-- diagnose
-- plan
-- research
+- **Trust `ok` / `degraded`, not just the prose.** Every result is JSON with
+  `ok` (false when the run failed or was degraded), `degraded`, and `answer`.
+  Reviews also carry `verdict` and `findings` by severity.
+- **Background the big jobs.** Deep reviews and research can take a while; start
+  them in the background and fetch the result later. The default timeout is 30
+  minutes.
+- **Focus narrows the lens** instead of reaching for a separate command.
+- **Block secret-like context** with `--strict-sensitive-context` (MCP
+  `strict_sensitive_context`) when you want a run to stop rather than warn.
+- **Restart Codex after upgrading** so the new tool schema loads.
 
-For a specialist angle — security, tests, release risk, architecture, logs,
-dependencies, spec, or PR prep — use one of those five and describe the focus in
-plain English. The read-only specialist subagents run regardless.
+## How it works
 
-```text
-$claude review the auth changes against main, focus on secrets and rollback
-$claude research the dependency upgrade risk in this branch, run in background
-$claude diagnose this CI failure: <paste logs>
-```
+The installer adds the `claude` Codex plugin and registers the
+`claude-code-companion` MCP server. `$claude` calls the MCP tool when Codex
+exposes it, and otherwise falls back to the bundled companion script.
 
-## How It Works
+The companion drives your local Claude Code CLI and login. By default it asks
+for Opus 4.8 (1M context) at max effort with dynamic workflows, plus read-only
+specialist subagents for code research, test gaps, security, architecture,
+release risk, and log diagnosis. Claude inspects the repo with read-only tools
+only — it never edits files, and that boundary is enforced at the MCP, CLI, and
+Claude-argument layers.
 
-The installer adds the `claude` Codex plugin and registers the companion MCP
-server as `claude-code-companion`. The `$claude` skill uses the MCP tool when
-Codex exposes it. If the app only loads the skill, the agent falls back to the
-bundled companion script automatically.
+Before each call the companion scans the diff, untracked files, your prompt, and
+repo instructions for secret-like content. By default it records a warning and
+continues; strict mode blocks instead. Separately, if Claude's output quotes
+something that looks like a secret, the stored result is redacted but kept so the
+job stays inspectable. This scan is a conservative heuristic, not a full secret
+scanner — run your normal tooling before publishing.
 
-The companion uses your local Claude Code CLI and existing Claude Code login.
-By default it asks Claude Code for `opus[1m]` with `max` effort and dynamic
-workflows. Claude can inspect the repo with read-only tools. It does not edit
-files.
+Usage runs on your Claude Code plan. No per-call dollar budget is set unless you
+pass `--max-budget-usd` / `max_budget_usd`.
 
-Under the hood, Claude also gets read-only specialist subagents for codebase
-research, test gaps, security, architecture, release risk, and log diagnosis.
-Claude manages that internal work and returns one synthesized result to Codex.
+## For Codex agents
 
-Before review calls, the companion scans tracked diffs, untracked file bodies,
-focus text, and repo instruction context for secret-like content. Before task
-calls, it scans the task prompt and repo instruction context. The default is
-low-friction: it records a warning and continues. Use
-`--strict-sensitive-context` or MCP `strict_sensitive_context` when a team wants
-heuristic secret-like context to block before Claude is called.
+Treat this as one high-level helper, not a set of shell commands:
 
-Usage is handled by your Claude Code plan. The companion sets a 30-minute
-timeout by default so deep background reviews have room to finish, and it does
-not set a per-call dollar budget unless you pass `--max-budget-usd` or MCP
-`max_budget_usd`. For long or broad delegations, prefer background mode; add a
-budget guard when your environment needs one.
-
-Optional output redaction is separate from outbound blocking: if Claude quotes
-text that looks like a token or password, the stored result is redacted and kept
-so the job remains inspectable.
-
-The secret-like scan is a conservative heuristic, not a full secret scanner.
-Run your normal secret-scanning tooling before publishing a repository.
-
-## Codex Agent Contract
-
-Codex agents should use this as one high-level helper, not as a set of shell
-commands for the human to operate:
-
-- Call `setup` when readiness is unknown.
-- Pass the active workspace root as `cwd` on every MCP call.
-- Use `working_tree` for current changes, `branch` plus `base` for branch
-  review, and `repo` for full-repository review.
-- Omit `target` for prompt-only diagnosis, planning, research, and focused
-  advisory tasks.
+- Call `setup` when readiness is unknown; a not-ready environment exits non-zero.
+- Pass the workspace root as `cwd` on every call.
+- Targets: `working_tree` for current changes, `branch` + `base` for branch
+  review, `repo` for the whole repository. Omit the target for diagnosis,
+  planning, and research.
 - Start substantial work in the background, poll `status`, then fetch `result`.
-- Include the Claude session id, model, parser status, target label, warnings,
-  and whether raw output was preserved when summarizing results.
-- Keep implementation and final judgment in Codex. Claude is advisory unless
-  the human explicitly switches tools.
+  Check `ok` / `degraded` before trusting a result.
+- Keep implementation and final judgment in Codex. Claude is advisory unless the
+  human switches tools.
 
 ## Requirements
 
 - Codex CLI with plugin and MCP support.
 - Claude Code CLI `2.1.158` or newer, installed and signed in.
-- Node.js 20 or newer.
-- Git for diff-based reviews.
+- Node.js 20 or newer, and Git.
 
-## Release And Support
+## Support
 
-- License: Apache-2.0.
-- Publisher: Anhtai Huynh.
-- GitHub: https://github.com/anhtaiH/claude-code-companion.
-- Security policy: [SECURITY.md](SECURITY.md).
-- Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
-- Release checklist: [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
-- GA polish plan: [docs/GA_POLISH_PLAN.md](docs/GA_POLISH_PLAN.md).
+- License: Apache-2.0 · Publisher: Anhtai Huynh
+- [Install guide](docs/INSTALL.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
+  · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+- Issues: https://github.com/anhtaiH/claude-code-companion/issues
 
 ## Development
 
@@ -146,7 +119,7 @@ cd claude-code-companion
 npm run check
 ```
 
-The tests use a fake `claude` binary, so they do not spend Claude credits.
+Tests use a fake `claude` binary, so they spend no Claude credits.
 
 ## License
 

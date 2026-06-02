@@ -48,11 +48,15 @@ Exit `124` means Claude timed out. The default timeout is 30 minutes. Retry with
 a narrower prompt, or pass CLI `--timeout-ms <milliseconds>` or MCP
 `timeout_ms`.
 
-## Review Says Claude Output Could Not Be Parsed
+## A Result Is Marked `degraded` / `ok: false`
 
-The companion persists malformed or prose review output as a
-`needs-attention` result instead of discarding it. Fetch the normal result,
-inspect the redacted raw output, then rerun with a narrower focus if needed.
+Every result carries `ok` and `degraded`. A result is degraded when the run
+timed out, Claude failed, the review diff could not be computed (for example a
+`branch` review with no resolvable base), or Claude's output could not be parsed
+into the structured review shape. The companion still preserves and returns
+whatever it has — fetch the result, read `answer` and the raw output, and rerun
+with a narrower scope or an explicit `base` if needed. Trust `ok` / `degraded`,
+not the prose, before acting on a result.
 
 ## Background Job Looks Stale
 
@@ -73,3 +77,11 @@ through the MCP tool. Rerun the installer and start a new Codex session:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/anhtaiH/claude-code-companion/main/install.sh | bash
 ```
+
+## Install Exits Non-Zero
+
+Exit `3` means a required step failed — adding the marketplace or the plugin.
+Check that the Codex CLI is current and the source is reachable, then rerun.
+MCP registration itself is best-effort: if your Codex build has no `codex mcp`
+command, the installer prints a note and still exits `0`, and the `$claude`
+skill keeps working.
