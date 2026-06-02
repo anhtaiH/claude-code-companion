@@ -4,8 +4,14 @@ set -euo pipefail
 marketplace_name="${CLAUDE_CODE_COMPANION_MARKETPLACE:-claude-code-companion}"
 plugin_name="${CLAUDE_CODE_COMPANION_PLUGIN:-claude}"
 legacy_plugin_name="claude-code-companion"
+# Installs from main by default. Pin a release with
+# CLAUDE_CODE_COMPANION_SOURCE='anhtaiH/claude-code-companion@<tag>'.
 source_spec="${CLAUDE_CODE_COMPANION_SOURCE:-anhtaiH/claude-code-companion}"
 min_claude_version="2.1.158"
+# Exit code for a genuinely fatal install failure (marketplace or plugin add).
+# MCP registration stays best-effort: the $claude skill can run the companion
+# script even when the MCP tool is absent.
+exit_plugin_add_failed=3
 
 usage() {
   cat <<'USAGE'
@@ -22,13 +28,32 @@ need() {
   fi
 }
 
+report_remove() {
+  local verbose="$1" label="$2"
+  shift 2
+  if "$@" >/dev/null 2>&1; then
+    if [[ "${verbose}" == "verbose" ]]; then
+      printf '  removed: %s\n' "${label}"
+    fi
+  elif [[ "${verbose}" == "verbose" ]]; then
+    printf '  not present: %s\n' "${label}"
+  fi
+}
+
 remove_existing() {
-  codex plugin remove "${plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
-  codex plugin remove "${legacy_plugin_name}@${marketplace_name}" >/dev/null 2>&1 || true
-  codex plugin marketplace remove "${marketplace_name}" >/dev/null 2>&1 || true
-  codex mcp remove "${marketplace_name}" >/dev/null 2>&1 || true
-  codex mcp remove "${plugin_name}" >/dev/null 2>&1 || true
-  codex mcp remove "${legacy_plugin_name}" >/dev/null 2>&1 || true
+  local verbose="${1:-quiet}"
+  report_remove "${verbose}" "plugin ${plugin_name}" \
+    codex plugin remove "${plugin_name}@${marketplace_name}"
+  report_remove "${verbose}" "plugin ${legacy_plugin_name}" \
+    codex plugin remove "${legacy_plugin_name}@${marketplace_name}"
+  report_remove "${verbose}" "marketplace ${marketplace_name}" \
+    codex plugin marketplace remove "${marketplace_name}"
+  report_remove "${verbose}" "mcp ${marketplace_name}" \
+    codex mcp remove "${marketplace_name}"
+  report_remove "${verbose}" "mcp ${plugin_name}" \
+    codex mcp remove "${plugin_name}"
+  report_remove "${verbose}" "mcp ${legacy_plugin_name}" \
+    codex mcp remove "${legacy_plugin_name}"
 }
 
 version_ge() {
@@ -60,7 +85,8 @@ case "${1:-}" in
     ;;
   --uninstall)
     need codex
-    remove_existing
+    printf 'Removing Claude Code Companion from Codex...\n'
+    remove_existing verbose
     printf 'Claude Code Companion removed from Codex.\n'
     state_root="${XDG_STATE_HOME:-$HOME/.local/state}/claude-code-companion"
     printf 'Job state, if present, remains under: %s\n' "${state_root}"
@@ -102,8 +128,14 @@ printf 'Installing Claude Code Companion for Codex...\n'
 
 remove_existing
 
-codex plugin marketplace add "${source_spec}"
-install_output="$(codex plugin add "${plugin_name}@${marketplace_name}")"
+if ! codex plugin marketplace add "${source_spec}"; then
+  printf 'Error: could not add the marketplace %s. Check the source and your Codex version.\n' "${source_spec}" >&2
+  exit "${exit_plugin_add_failed}"
+fi
+if ! install_output="$(codex plugin add "${plugin_name}@${marketplace_name}")"; then
+  printf 'Error: could not add the %s plugin from %s.\n' "${plugin_name}" "${marketplace_name}" >&2
+  exit "${exit_plugin_add_failed}"
+fi
 printf '%s\n' "${install_output}"
 
 plugin_root="$(
@@ -113,15 +145,19 @@ plugin_root="$(
 )"
 
 if [[ -z "${plugin_root}" || ! -f "${plugin_root}/scripts/mcp-server.mjs" ]]; then
-  printf 'Warning: could not locate installed plugin root for MCP registration.\n' >&2
-  printf 'The $claude skill was installed. Start a new Codex session and run `$claude setup`.\n' >&2
-  printf 'If the MCP tool is missing, reinstall after updating Codex or register it manually from the installed plugin root.\n' >&2
+  printf 'Note: could not locate the installed plugin root for explicit MCP registration (non-fatal).\n' >&2
+  printf 'The plugin manifest still registers the MCP server, and the $claude skill can run the companion script either way.\n' >&2
+  printf 'Start a new Codex session and run `$claude setup` to verify the tool.\n' >&2
+elif ! codex mcp --help >/dev/null 2>&1; then
+  printf 'Note: this Codex build does not support `codex mcp`; skipping explicit MCP registration (non-fatal).\n' >&2
+  printf 'The plugin manifest still registers the MCP server and the $claude skill fallback works.\n' >&2
 else
   codex mcp remove "${marketplace_name}" >/dev/null 2>&1 || true
   if ! codex mcp add "${marketplace_name}" -- node "${plugin_root}/scripts/mcp-server.mjs"; then
-    printf 'Warning: MCP registration failed. The $claude skill fallback can still run the companion script.\n' >&2
+    printf 'Note: explicit MCP registration failed (non-fatal). The $claude skill fallback can still run the companion script.\n' >&2
   fi
 fi
 
-printf '\nInstalled. Start a new Codex session, then ask:\n'
+printf '\nInstalled. Start a NEW Codex session before using it — an already-open\n'
+printf 'session caches the previous MCP schema after an install or upgrade. Then ask:\n'
 printf '  $claude setup\n'

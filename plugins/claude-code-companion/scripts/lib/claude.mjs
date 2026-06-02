@@ -8,7 +8,7 @@ const READ_ONLY_ALLOWED_TOOLS =
 const WRITE_TOOLS = /\b(?:Edit|Write)\b/;
 const DEFAULT_MODEL = 'opus[1m]';
 const DEFAULT_EFFORT = 'max';
-const MIN_CLAUDE_CODE_VERSION = '2.1.158';
+export const MIN_CLAUDE_CODE_VERSION = '2.1.158';
 const AGENT_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
 const AGENT_ALLOWED_TOOLS = [
   'Read',

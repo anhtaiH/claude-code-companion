@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -113,6 +114,19 @@ try {
     '.agents/plugins/marketplace.json',
   ]) {
     assertPath(requiredFile, 'public repo file', repoRoot);
+  }
+
+  const installShPath = path.join(repoRoot, 'install.sh');
+  const bashCheck = spawnSync('bash', ['-n', installShPath], {
+    encoding: 'utf8',
+  });
+  if (bashCheck.error?.code === 'ENOENT') {
+    process.stdout.write('Skipping install.sh syntax check (bash unavailable).\n');
+  } else {
+    assert(
+      bashCheck.status === 0,
+      `install.sh has a bash syntax error: ${bashCheck.stderr || bashCheck.error}`,
+    );
   }
 
   process.stdout.write('Plugin package validation passed.\n');

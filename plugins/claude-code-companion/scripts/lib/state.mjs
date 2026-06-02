@@ -113,6 +113,25 @@ function writeFileAtomic(filePath, content) {
   fs.renameSync(tempPath, filePath);
 }
 
+function unlinkIfExists(filePath) {
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Best-effort cleanup; a failed unlink must never break a state write.
+  }
+}
+
+function deleteJobArtifacts(workspaceRoot, jobId) {
+  try {
+    assertValidJobId(jobId);
+  } catch {
+    return;
+  }
+  unlinkIfExists(resolveJobFile(workspaceRoot, jobId));
+  unlinkIfExists(resolveJobLogFile(workspaceRoot, jobId));
+  unlinkIfExists(resolveJobResultFile(workspaceRoot, jobId));
+}
+
 function loadJobIndex() {
   const parsed = readJsonFile(resolveJobIndexFile(), null);
   if (!parsed || typeof parsed !== 'object') {
@@ -143,6 +162,22 @@ function saveJobIndex(index) {
       2,
     )}\n`,
   );
+}
+
+function evictJobIndexEntries(jobIds) {
+  try {
+    const index = loadJobIndex();
+    let changed = false;
+    for (const jobId of jobIds) {
+      if (index.jobs[jobId]) {
+        delete index.jobs[jobId];
+        changed = true;
+      }
+    }
+    if (changed) saveJobIndex(index);
+  } catch {
+    // Best-effort; the index is a convenience lookup, not the source of truth.
+  }
 }
 
 function indexJob(workspaceRoot, jobId) {
@@ -189,14 +224,35 @@ function pruneJobs(jobs) {
 
 export function saveState(workspaceRoot, state) {
   ensureStateDir(workspaceRoot);
+  const before = Array.isArray(state.jobs) ? state.jobs : [];
+  const kept = pruneJobs(before);
   const next = {
     version: STATE_VERSION,
-    jobs: pruneJobs(state.jobs ?? []),
+    jobs: kept,
   };
+  // Write the trimmed state first so it stays the source of truth even if the
+  // artifact cleanup below is interrupted.
   writeFileAtomic(
     resolveStateFile(workspaceRoot),
     `${JSON.stringify(next, null, 2)}\n`,
   );
+
+  // Reclaim disk from jobs that just fell out of the retention window; without
+  // this, every pruned job orphaned its <id>.json/.log/.result.json forever.
+  // Never touch a still-active job: a queued/running record can drop out of the
+  // newest-N window (e.g. a long job with an older updatedAt) while its worker
+  // still needs to re-read its <id>.json request.
+  const keptIds = new Set(kept.map((job) => job.id));
+  const dropped = before.filter(
+    (job) =>
+      job.id &&
+      !keptIds.has(job.id) &&
+      !['queued', 'running'].includes(job.status),
+  );
+  if (dropped.length) {
+    for (const job of dropped) deleteJobArtifacts(workspaceRoot, job.id);
+    evictJobIndexEntries(dropped.map((job) => job.id));
+  }
   return next;
 }
 

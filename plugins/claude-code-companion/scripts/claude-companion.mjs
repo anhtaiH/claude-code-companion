@@ -212,7 +212,9 @@ function buildJob(workspaceRoot, request) {
     model: request.model ?? defaults.model,
     effort: request.effort ?? defaults.effort,
     scope: request.scope ?? request.base ?? null,
-    summary: request.summary,
+    // The summary is display-only and shown by `status`; redact secret-like
+    // text so a leaked-looking prompt is not stored or surfaced in the clear.
+    summary: redactSecretLikeText(request.summary),
     logFile,
     resultFile,
     createdAt: nowIso(),
@@ -737,6 +739,11 @@ async function runForegroundJob(job, request, runner, asJson) {
       job.id,
       execution.payload,
     );
+    // Clear `request` from the terminal record: the runner consumed it in
+    // memory above, and it holds the raw, unredacted prompt. `null` (not
+    // omission) is required because upsertJob merges patches over the stored
+    // job. The queued/running writes above keep `request` so the detached
+    // worker can re-read it.
     const next = {
       ...running,
       status,
@@ -746,6 +753,7 @@ async function runForegroundJob(job, request, runner, asJson) {
       summary: execution.summary,
       resultFile,
       completedAt: nowIso(),
+      request: null,
     };
     upsertJob(job.workspaceRoot, next);
     writeJobFile(job.workspaceRoot, job.id, next);
@@ -770,6 +778,7 @@ async function runForegroundJob(job, request, runner, asJson) {
       errorMessage,
       resultFile,
       completedAt: nowIso(),
+      request: null,
     };
     upsertJob(job.workspaceRoot, next);
     writeJobFile(job.workspaceRoot, job.id, next);
@@ -1005,6 +1014,9 @@ function refreshRunningJobs(workspaceRoot) {
       upsertJob(workspaceRoot, stored);
       continue;
     }
+    // Clear `request` when marking a dead worker failed; otherwise the
+    // unredacted prompt would persist in state.json indefinitely. `null` (not
+    // omission) is required because upsertJob merges over the stored job.
     upsertJob(workspaceRoot, {
       ...job,
       status: 'failed',
@@ -1012,6 +1024,7 @@ function refreshRunningJobs(workspaceRoot) {
       pid: null,
       errorMessage: 'Worker process is no longer running.',
       completedAt: nowIso(),
+      request: null,
     });
   }
 }

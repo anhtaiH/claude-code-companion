@@ -37,6 +37,17 @@ reported by `codex plugin add`:
 codex mcp add claude-code-companion -- node "<installed-plugin-root>/scripts/mcp-server.mjs"
 ```
 
+After a manual install, run `claude auth login` if you are not already signed
+in, then verify from a fresh Codex session with `$claude setup` (see
+[Authentication](#authentication)).
+
+To install a pinned release instead of `main`, set the source first:
+
+```bash
+CLAUDE_CODE_COMPANION_SOURCE='anhtaiH/claude-code-companion@<tag>' \
+  curl -fsSL https://raw.githubusercontent.com/anhtaiH/claude-code-companion/main/install.sh | bash
+```
+
 ## Upgrade
 
 Rerun the installer. It removes the previous plugin and MCP registration before
@@ -59,6 +70,9 @@ codex plugin marketplace remove claude-code-companion
 codex mcp remove claude-code-companion
 codex mcp remove claude
 ```
+
+The uninstaller reports each entry as it goes; `not present:` lines are normal
+when part of a previous install was already removed.
 
 Job state is not removed automatically. It lives under
 `${XDG_STATE_HOME:-$HOME/.local/state}/claude-code-companion`.

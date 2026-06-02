@@ -3,16 +3,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  appendLogLine,
   assertValidJobId,
+  findIndexedWorkspaceRoot,
   listJobs,
   readJobFile,
   readResultFile,
+  resolveJobFile,
+  resolveJobLogFile,
   resolveJobResultFile,
   resolveStateFile,
+  updateState,
   upsertJob,
   writeJobFile,
+  writeResultFile,
 } from '../plugins/claude-code-companion/scripts/lib/state.mjs';
-import { normalizeReviewPayload } from '../plugins/claude-code-companion/scripts/lib/claude.mjs';
+import {
+  MIN_CLAUDE_CODE_VERSION,
+  normalizeReviewPayload,
+} from '../plugins/claude-code-companion/scripts/lib/claude.mjs';
 import {
   hasSecretLikeText,
   redactSecretLikeText,
@@ -109,6 +118,24 @@ test('plugin manifest installs as claude from the companion marketplace', () => 
   assert.match(installer, /min_claude_version="2\.1\.158"/);
   assert.doesNotMatch(installer, /mcp_registered/);
   assert.match(installer, /\$claude setup/);
+  // A genuinely fatal install failure exits with a distinct code; MCP
+  // registration stays best-effort.
+  assert.match(installer, /exit_plugin_add_failed=3/);
+  // The Codex `mcp` capability is probed before explicit registration.
+  assert.match(installer, /codex mcp --help/);
+  // `codex mcp add ... node` must stay on one line so the registration command
+  // is well-formed.
+  assert.doesNotMatch(installer, /codex mcp add[^\n]*\n[^\n]*node/);
+});
+
+test('install.sh version floor matches the code constant (single source of truth)', () => {
+  const installer = fs.readFileSync(
+    path.join(PLUGIN_ROOT, '..', '..', 'install.sh'),
+    'utf8',
+  );
+  const match = installer.match(/min_claude_version="([0-9.]+)"/);
+  assert.ok(match, 'install.sh must declare min_claude_version');
+  assert.equal(match[1], MIN_CLAUDE_CODE_VERSION);
 });
 
 test('all command files declare hints and map to claude_code actions', () => {
@@ -1207,6 +1234,105 @@ test('background task completes and result is fetched without transcript recover
   assert.equal(resultPayload.answer, 'Handled task');
 });
 
+test('a completed background job does not persist the raw prompt or request', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stateDir = makeTempDir();
+  const env = buildEnv(binDir, { CLAUDE_CODE_COMPANION_STATE_DIR: stateDir });
+
+  const started = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--background',
+      '--json',
+      `diagnose token=${FAKE_OPENAI_KEY}`,
+    ],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const jobId = JSON.parse(started.stdout).jobId;
+
+  let completed = false;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const status = run(
+      process.execPath,
+      [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+      { env },
+    );
+    if (JSON.parse(status.stdout).jobs[0]?.status === 'completed') {
+      completed = true;
+      break;
+    }
+    sleep(50);
+  }
+  assert.equal(completed, true);
+
+  // The detached worker still ran (it re-read request.prompt while queued), but
+  // the terminal record drops request and never persists the raw secret.
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR = stateDir;
+  try {
+    const stored = readJobFile(repo, jobId);
+    assert.ok(!stored.request, 'terminal record must not retain the request');
+    assert.equal(
+      fs.readFileSync(resolveJobFile(repo, jobId), 'utf8').includes(FAKE_OPENAI_KEY),
+      false,
+    );
+    assert.equal(
+      fs.readFileSync(resolveStateFile(repo), 'utf8').includes(FAKE_OPENAI_KEY),
+      false,
+    );
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+});
+
+test('a queued job summary is redacted for secret-shaped prompts', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'slow' });
+
+  const started = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--background',
+      '--json',
+      `token=${FAKE_OPENAI_KEY} investigate`,
+    ],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const jobId = JSON.parse(started.stdout).jobId;
+
+  const status = run(
+    process.execPath,
+    [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(status.status, 0, status.stderr);
+  const job = JSON.parse(status.stdout).jobs[0];
+  assert.equal(job.summary.includes(FAKE_OPENAI_KEY), false);
+  assert.match(job.summary, /\[REDACTED:/);
+
+  run(
+    process.execPath,
+    [COMPANION, 'cancel', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+});
+
 test('background result can be fetched by job id after cwd drift', () => {
   const binDir = makeTempDir();
   installFakeClaude(binDir);
@@ -1358,6 +1484,103 @@ test('job state keeps only the latest fifty jobs', () => {
       });
     }
     assert.equal(listJobs(workspace).length, 50);
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+});
+
+test('pruning a job deletes its on-disk artifacts and index entry', () => {
+  const workspace = makeTempDir();
+  const stateDir = makeTempDir();
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR = stateDir;
+  try {
+    for (let index = 0; index < 55; index += 1) {
+      const id = `job-${index}`;
+      const job = {
+        id,
+        workspaceRoot: workspace,
+        kind: 'task',
+        jobClass: 'task',
+        status: 'completed',
+        updatedAt: new Date(Date.now() + index).toISOString(),
+      };
+      writeJobFile(workspace, id, job);
+      writeResultFile(workspace, id, { ok: true });
+      appendLogLine(resolveJobLogFile(workspace, id), 'done');
+      upsertJob(workspace, job);
+    }
+    assert.equal(listJobs(workspace).length, 50);
+    assert.equal(fs.existsSync(resolveJobFile(workspace, 'job-0')), false);
+    assert.equal(fs.existsSync(resolveJobLogFile(workspace, 'job-0')), false);
+    assert.equal(fs.existsSync(resolveJobResultFile(workspace, 'job-0')), false);
+    assert.equal(findIndexedWorkspaceRoot('job-0'), null);
+    assert.equal(fs.existsSync(resolveJobFile(workspace, 'job-54')), true);
+    assert.ok(findIndexedWorkspaceRoot('job-54'));
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+});
+
+test('an active job keeps its files even when pruned from the newest window', () => {
+  const workspace = makeTempDir();
+  const stateDir = makeTempDir();
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR = stateDir;
+  try {
+    const activeId = 'task-active-old';
+    writeJobFile(workspace, activeId, { id: activeId, status: 'running' });
+    // A new insert keeps a caller-supplied (old) updatedAt, so this job lands
+    // outside the newest-50 window once newer jobs arrive.
+    upsertJob(workspace, {
+      id: activeId,
+      status: 'running',
+      pid: 999999,
+      updatedAt: new Date(Date.now() - 1_000_000).toISOString(),
+    });
+    for (let index = 0; index < 50; index += 1) {
+      upsertJob(workspace, {
+        id: `job-${index}`,
+        status: 'completed',
+        updatedAt: new Date(Date.now() + index).toISOString(),
+      });
+    }
+    assert.equal(listJobs(workspace).length, 50);
+    assert.equal(
+      listJobs(workspace).some((job) => job.id === activeId),
+      false,
+    );
+    assert.equal(fs.existsSync(resolveJobFile(workspace, activeId)), true);
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+});
+
+test('repeated prune cleanup is idempotent', () => {
+  const workspace = makeTempDir();
+  const stateDir = makeTempDir();
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR = stateDir;
+  try {
+    for (let index = 0; index < 55; index += 1) {
+      const id = `job-${index}`;
+      const job = {
+        id,
+        status: 'completed',
+        updatedAt: new Date(Date.now() + index).toISOString(),
+      };
+      writeJobFile(workspace, id, job);
+      upsertJob(workspace, job);
+    }
+    assert.doesNotThrow(() => updateState(workspace, () => {}));
+    assert.equal(listJobs(workspace).length, 50);
+    assert.equal(fs.existsSync(resolveJobFile(workspace, 'job-0')), false);
   } finally {
     if (previous === undefined)
       delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
