@@ -31,9 +31,11 @@ import {
   COMPANION,
   initGitRepo,
   installFakeClaude,
+  installFakeCodex,
   makeTempDir,
   MCP_SERVER,
   PLUGIN_ROOT,
+  ROOT,
   run,
 } from './helpers.mjs';
 
@@ -1325,12 +1327,69 @@ test('a queued job summary is redacted for secret-shaped prompts', () => {
   const job = JSON.parse(status.stdout).jobs[0];
   assert.equal(job.summary.includes(FAKE_OPENAI_KEY), false);
   assert.match(job.summary, /\[REDACTED:/);
+  // status --json must not echo the raw request prompt for an active job.
+  assert.equal(job.request, undefined);
+  assert.equal(JSON.stringify(job).includes(FAKE_OPENAI_KEY), false);
 
   run(
     process.execPath,
     [COMPANION, 'cancel', '--cwd', repo, jobId, '--json'],
     { env },
   );
+});
+
+test('cancelling an active job does not leave the raw prompt on disk', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stateDir = makeTempDir();
+  const env = buildEnv(binDir, {
+    CLAUDE_CODE_COMPANION_STATE_DIR: stateDir,
+    FAKE_CLAUDE_MODE: 'slow',
+  });
+
+  const started = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--background',
+      '--json',
+      `token=${FAKE_OPENAI_KEY} investigate`,
+    ],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const jobId = JSON.parse(started.stdout).jobId;
+
+  const cancel = run(
+    process.execPath,
+    [COMPANION, 'cancel', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(cancel.status, 0, cancel.stderr);
+  assert.equal(JSON.parse(cancel.stdout).status, 'cancelled');
+
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR = stateDir;
+  try {
+    const stored = readJobFile(repo, jobId);
+    assert.ok(!stored.request, 'cancelled record must not retain the request');
+    assert.equal(
+      fs.readFileSync(resolveJobFile(repo, jobId), 'utf8').includes(FAKE_OPENAI_KEY),
+      false,
+    );
+    assert.equal(
+      fs.readFileSync(resolveStateFile(repo), 'utf8').includes(FAKE_OPENAI_KEY),
+      false,
+    );
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
 });
 
 test('background result can be fetched by job id after cwd drift', () => {
@@ -2497,4 +2556,28 @@ test('result with no job and no reference stays a non-error empty response', () 
   assert.equal(payload.ok, false);
   assert.equal(payload.job, null);
   assert.equal(payload.result, null);
+});
+
+test('install.sh exits with the fatal code when plugin install fails', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  installFakeCodex(binDir);
+  const result = run('bash', [path.join(ROOT, 'install.sh')], {
+    env: buildEnv(binDir, { FAKE_CODEX_MODE: 'marketplace-fail' }),
+  });
+  assert.equal(result.status, 3, result.stdout + result.stderr);
+});
+
+test('install.sh succeeds when codex mcp registration is unsupported', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  installFakeCodex(binDir);
+  const result = run('bash', [path.join(ROOT, 'install.sh')], {
+    env: buildEnv(binDir, {
+      FAKE_CODEX_MODE: 'no-mcp',
+      FAKE_PLUGIN_ROOT: PLUGIN_ROOT,
+    }),
+  });
+  // MCP registration is best-effort: a Codex without `codex mcp` is non-fatal.
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 });

@@ -227,3 +227,30 @@ console.log(JSON.stringify({
   fs.writeFileSync(claudePath, script);
   fs.chmodSync(claudePath, 0o755);
 }
+
+export function installFakeCodex(binDir) {
+  fs.mkdirSync(binDir, { recursive: true });
+  try {
+    fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
+  } catch {
+    // node may already be linked when the fake claude shares this binDir.
+  }
+  const script = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const mode = process.env.FAKE_CODEX_MODE || 'ok';
+if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {
+  process.exit(mode === 'marketplace-fail' ? 1 : 0);
+}
+if (args[0] === 'plugin' && args[1] === 'add') {
+  process.stdout.write('Installed plugin root: ' + (process.env.FAKE_PLUGIN_ROOT || '') + '\\n');
+  process.exit(mode === 'plugin-add-fail' ? 1 : 0);
+}
+if (args[0] === 'mcp' && args[1] === '--help') {
+  process.exit(mode === 'no-mcp' ? 1 : 0);
+}
+process.exit(0);
+`;
+  const codexPath = path.join(binDir, 'codex');
+  fs.writeFileSync(codexPath, script);
+  fs.chmodSync(codexPath, 0o755);
+}

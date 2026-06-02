@@ -1049,6 +1049,15 @@ function outputJobNotFound(kind, reference, workspaceRoot, asJson) {
   process.exitCode = 1;
 }
 
+// A queued/running job record carries the raw `request` (incl. the prompt) so
+// the detached worker can re-read it. Never surface that on status/result
+// output — callers only need the redacted summary and metadata.
+function publicJob(job) {
+  if (!job || typeof job !== 'object') return job;
+  const { request: _request, ...rest } = job;
+  return rest;
+}
+
 function handleStatus(argv) {
   const { options, positionals } = parseCommonOptions(argv);
   const cwd = resolveCwd(options);
@@ -1070,7 +1079,7 @@ function handleStatus(argv) {
     kind: 'status',
     workspaceRoot,
     jobs: jobs.map((job) => ({
-      ...job,
+      ...publicJob(job),
       logPreview: readLogPreview(job.logFile),
     })),
   };
@@ -1102,7 +1111,7 @@ function handleResult(argv) {
       ok,
       kind: 'result',
       workspaceRoot,
-      job,
+      job: publicJob(job),
       result,
       answer: result?.answer ?? null,
     },
@@ -1152,6 +1161,10 @@ function handleCancel(argv) {
     phase: 'cancelled',
     pid: null,
     cancelledAt: nowIso(),
+    // The worker has been terminated, so the persisted request prompt is no
+    // longer needed; clear it (null, not omit — upsertJob merges over the
+    // stored job) so a cancelled job does not leave the raw prompt on disk.
+    request: null,
   };
   appendLogLine(job.logFile, 'Cancelled by user.');
   writeJobFile(workspaceRoot, job.id, next);
