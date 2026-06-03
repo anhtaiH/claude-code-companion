@@ -2901,17 +2901,33 @@ test('unknown cost preset is rejected', () => {
   assert.match(payload.error, /Unknown cost preset/);
 });
 
-test('MCP server reaps an in-flight foreground job on SIGTERM', async () => {
+async function assertSignalReapsForegroundChild(signal) {
   const { spawn } = await import('node:child_process');
+  const asleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const isAlive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const binDir = makeTempDir();
   installFakeClaude(binDir);
   const repo = tempRepo();
-  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'slow' });
+  const pidFile = path.join(makeTempDir(), 'claude.pid');
+  const env = buildEnv(binDir, {
+    FAKE_CLAUDE_MODE: 'slow',
+    FAKE_CLAUDE_PID_FILE: pidFile,
+  });
 
   const server = spawn(process.execPath, [MCP_SERVER], {
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  server.stdout.on('data', () => {});
+  server.stderr.on('data', () => {});
   const call = {
     jsonrpc: '2.0',
     id: 1,
@@ -2929,12 +2945,188 @@ test('MCP server reaps an in-flight foreground job on SIGTERM', async () => {
   };
   server.stdin.write(`${JSON.stringify(call)}\n`);
 
-  await new Promise((resolve) => setTimeout(resolve, 800));
-  const exited = new Promise((resolve) => server.on('exit', () => resolve('exited')));
-  server.kill('SIGTERM');
-  const outcome = await Promise.race([
-    exited,
-    new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000)),
-  ]);
-  assert.equal(outcome, 'exited', 'server should exit after SIGTERM');
+  // Wait until the underlying (slow) Claude child has actually started.
+  let claudePid = null;
+  for (let attempt = 0; attempt < 80 && claudePid === null; attempt += 1) {
+    if (fs.existsSync(pidFile)) {
+      const text = fs.readFileSync(pidFile, 'utf8').trim();
+      if (text) claudePid = Number(text);
+    }
+    if (claudePid === null) await asleep(50);
+  }
+  assert.ok(claudePid, `${signal}: Claude child should have started`);
+  assert.equal(isAlive(claudePid), true, `${signal}: child alive pre-signal`);
+
+  const exited = new Promise((resolve) => server.on('exit', () => resolve()));
+  server.kill(signal);
+  await Promise.race([exited, asleep(6000)]);
+
+  let reaped = false;
+  for (let attempt = 0; attempt < 60 && !reaped; attempt += 1) {
+    if (!isAlive(claudePid)) {
+      reaped = true;
+      break;
+    }
+    await asleep(50);
+  }
+  if (!reaped) {
+    try {
+      process.kill(claudePid, 'SIGKILL');
+    } catch {
+      // best-effort cleanup if the assertion is about to fail
+    }
+  }
+  assert.equal(
+    reaped,
+    true,
+    `${signal}: in-flight Claude child should be reaped, not left billing`,
+  );
+}
+
+test('MCP server reaps the in-flight Claude child on SIGTERM', async () => {
+  await assertSignalReapsForegroundChild('SIGTERM');
+});
+
+test('MCP server reaps the in-flight Claude child on SIGINT', async () => {
+  await assertSignalReapsForegroundChild('SIGINT');
+});
+
+test('unknown cost preset is rejected on review as well as task', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--cost-preset', 'bogus', '--json'],
+    { env },
+  );
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /Unknown cost preset/);
+});
+
+test('explicit effort overrides the cheap preset and drops ultracode', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--cost-preset',
+      'cheap',
+      '--effort',
+      'high',
+      '--json',
+      'probe',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--effort') + 1], 'high');
+  assert.equal(args[args.indexOf('--model') + 1], 'haiku');
+  assert.equal(args.includes('--settings'), false);
+});
+
+test('MCP cost_preset forwards a cheap delegation to Claude', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: {
+          action: 'delegate',
+          kind: 'diagnose',
+          cwd: repo,
+          cost_preset: 'cheap',
+          prompt: 'probe',
+        },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { env, input });
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--model') + 1], 'haiku');
+  assert.equal(args[args.indexOf('--effort') + 1], 'low');
+});
+
+test('status reports a dead-pid running job as failed, not stale', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+  const jobId = 'task-liveness-dead';
+
+  run(process.execPath, [COMPANION, 'setup', '--cwd', repo, '--json'], { env });
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR =
+    env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  try {
+    const dead = {
+      id: jobId,
+      workspaceRoot: repo,
+      kind: 'task',
+      jobClass: 'task',
+      status: 'running',
+      phase: 'running',
+      pid: 99999999,
+      summary: 'dead worker',
+    };
+    upsertJob(repo, dead);
+    writeJobFile(repo, jobId, dead);
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+
+  const status = run(
+    process.execPath,
+    [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(status.status, 0, status.stderr);
+  const job = JSON.parse(status.stdout).jobs[0];
+  assert.equal(job.status, 'failed');
+  assert.equal(job.liveness, 'failed');
+  assert.equal(job.pidAlive, false);
+});
+
+test('job worker writes its failure trace to stderr (captured into the log)', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'job-worker', '--cwd', repo, '--job-id', 'task-missing'],
+    { env },
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /No stored request/);
 });

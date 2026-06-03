@@ -511,6 +511,9 @@ function isEmptyReviewTarget(target, context) {
   if (target.mode === 'repo') return false;
   const noDiff = !String(context.diffScanText ?? '').trim();
   if (target.mode === 'working-tree') {
+    // A failed untracked listing reports names:[] too; never treat that as
+    // empty, or a git error would silently suppress the whole review.
+    if (context.untracked.listed === false) return false;
     return noDiff && context.untracked.names.length === 0;
   }
   if (target.mode === 'branch') return noDiff;

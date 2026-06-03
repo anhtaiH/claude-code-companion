@@ -91,6 +91,9 @@ const input = fs.readFileSync(0, 'utf8');
 if (process.env.FAKE_CLAUDE_STDIN_FILE) {
   fs.writeFileSync(process.env.FAKE_CLAUDE_STDIN_FILE, input);
 }
+if (process.env.FAKE_CLAUDE_PID_FILE) {
+  fs.writeFileSync(process.env.FAKE_CLAUDE_PID_FILE, String(process.pid));
+}
 if (mode === 'slow') {
   setTimeout(() => {}, 30000);
   return;

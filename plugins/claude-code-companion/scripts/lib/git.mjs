@@ -129,9 +129,13 @@ function collectUntracked(repoRoot) {
       names: [],
       entries: [],
       rendered: 'Unable to list untracked files.',
+      // The listing failed; `names: []` here does NOT mean "no untracked files".
+      // Callers that treat empty as "nothing to review" must not short-circuit.
+      listed: false,
     };
   const names = result.stdout.trim().split(/\r?\n/).filter(Boolean);
-  if (!names.length) return { names, entries: [], rendered: 'None.' };
+  if (!names.length)
+    return { names, entries: [], rendered: 'None.', listed: true };
 
   const entries = [];
   const rendered = [];
@@ -150,7 +154,7 @@ function collectUntracked(repoRoot) {
       `... ${names.length - MAX_UNTRACKED_FILES} more untracked file(s) omitted.`,
     );
   }
-  return { names, entries, rendered: rendered.join('\n\n') };
+  return { names, entries, rendered: rendered.join('\n\n'), listed: true };
 }
 
 function readRepoFile(repoRoot, relPath) {

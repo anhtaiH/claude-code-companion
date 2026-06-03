@@ -7,5 +7,6 @@ coverage/
 dist/
 tmp/
 .tmpverify/
+.verify_tmp/
 *.log
 *.tgz
