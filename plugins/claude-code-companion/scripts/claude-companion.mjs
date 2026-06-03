@@ -25,6 +25,7 @@ import {
 import {
   binaryAvailable,
   isPidRunning,
+  jobLiveness,
   nowIso,
   terminateProcessTree,
 } from './lib/process.mjs';
@@ -97,6 +98,25 @@ function output(payload, rendered, asJson) {
 // value would otherwise reach spawnSync and either throw an opaque RangeError
 // (foreground) or be serialized to null and silently disable the timeout
 // (background). Reject it here with a message that names the offending flag.
+// Optional cost presets for cheap probe/ping calls. A preset only fills in
+// model/effort the caller did not set explicitly — an explicit --model/--effort
+// always wins. The default (no preset) stays opus[1m]/max for real work.
+const COST_PRESETS = {
+  cheap: { model: 'haiku', effort: 'low' },
+};
+
+function resolveCostPreset(options) {
+  const name = options['cost-preset'];
+  if (name === undefined) return {};
+  const preset = COST_PRESETS[name];
+  if (!preset) {
+    throw new Error(
+      `Unknown cost preset "${name}". Use: ${Object.keys(COST_PRESETS).join(', ')}.`,
+    );
+  }
+  return preset;
+}
+
 function coerceTimeoutMs(raw) {
   if (raw === undefined || raw === null || raw === '') return DEFAULT_TIMEOUT_MS;
   const value = Number(raw);
@@ -149,6 +169,21 @@ function rejectWriteOptions(options) {
   }
 }
 
+// Probe-write a temp file in the state dir so setup doubles as a no-model
+// readiness/ping check: an unwritable state dir means jobs cannot be persisted.
+function probeStateWritable(workspaceRoot) {
+  try {
+    const dir = resolveStateDir(workspaceRoot);
+    fs.mkdirSync(dir, { recursive: true });
+    const probe = path.join(dir, `.write-probe-${process.pid}`);
+    fs.writeFileSync(probe, 'ok');
+    fs.rmSync(probe, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function buildSetupReport(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   ensureStateDir(workspaceRoot);
@@ -157,6 +192,7 @@ function buildSetupReport(cwd) {
   const auth = claude.available
     ? getClaudeAuthStatus(cwd)
     : { loggedIn: false, detail: 'Claude Code is not installed.' };
+  const stateWritable = probeStateWritable(workspaceRoot);
   const nextSteps = [];
   if (!claude.available) nextSteps.push('Install Claude Code and rerun setup.');
   if (claude.available && claude.supported === false) {
@@ -166,16 +202,20 @@ function buildSetupReport(cwd) {
   }
   if (claude.available && !auth.loggedIn)
     nextSteps.push('Run `claude auth login`.');
+  if (!stateWritable)
+    nextSteps.push('Fix permissions on the companion state directory.');
 
   return {
     ready:
       node.available &&
       claude.available &&
       claude.supported !== false &&
-      auth.loggedIn,
+      auth.loggedIn &&
+      stateWritable,
     node,
     claude,
     auth,
+    stateWritable,
     workspaceRoot,
     stateDir: resolveStateDir(workspaceRoot),
     defaults: getClaudeDefaults(),
@@ -463,6 +503,76 @@ function degradedReviewResult(request, target, context) {
   };
 }
 
+// True when there is genuinely nothing to review, so we can answer locally
+// without spending a Claude invocation. Repo scope is never "empty" (it reviews
+// the whole tree). Uses the full untruncated diff text, not the prompt-truncated
+// copy.
+function isEmptyReviewTarget(target, context) {
+  if (target.mode === 'repo') return false;
+  const noDiff = !String(context.diffScanText ?? '').trim();
+  if (target.mode === 'working-tree') {
+    return noDiff && context.untracked.names.length === 0;
+  }
+  if (target.mode === 'branch') return noDiff;
+  return false;
+}
+
+function noChangesReviewResult(request, target, context) {
+  const reviewName = request.reviewName;
+  const review = {
+    verdict: 'no-changes',
+    summary: `No changes to review for ${target.label}; the diff is empty.`,
+    findings: [],
+    next_steps: [],
+  };
+  const companion = {
+    resultKind: 'no-changes',
+    rawOutput: 'not-applicable',
+    targetScope: target.mode,
+    targetLabel: target.label,
+    parser: 'not-run',
+    parseError: null,
+    sensitiveContext: 'clear',
+    model: null,
+  };
+  return {
+    exitStatus: 0,
+    rendered: renderReviewResult({
+      reviewName,
+      targetLabel: target.label,
+      sessionId: null,
+      review,
+      parseError: null,
+      warnings: [],
+      companion,
+    }),
+    payload: {
+      ok: true,
+      kind: request.kind,
+      degraded: false,
+      answer: reviewAnswer(review),
+      reviewName,
+      targetLabel: target.label,
+      sessionId: null,
+      review,
+      parseError: null,
+      rawOutput: '',
+      warnings: [],
+      companion,
+      context: {
+        repoRoot: context.repoRoot,
+        branch: context.branch,
+        shortstat: context.shortstat,
+        diffError: null,
+        untracked: context.untracked.names,
+      },
+      claude: null,
+    },
+    sessionId: null,
+    summary: review.summary,
+  };
+}
+
 async function executeReviewRun(request) {
   ensureClaudeReady(request.cwd);
   const target = resolveReviewTarget(request.cwd, {
@@ -472,6 +582,10 @@ async function executeReviewRun(request) {
   const context = collectReviewContext(request.cwd, target);
   if (context.diffError) {
     return degradedReviewResult(request, target, context);
+  }
+  // Nothing to review: answer locally, never spending a Claude invocation.
+  if (isEmptyReviewTarget(target, context)) {
+    return noChangesReviewResult(request, target, context);
   }
   const schema = readJsonSchema(REVIEW_SCHEMA_PATH);
   const reviewName = request.reviewName;
@@ -726,6 +840,7 @@ async function runForegroundJob(job, request, runner, asJson) {
     status: 'running',
     phase: 'running',
     pid: process.pid,
+    startedAt: nowIso(),
     request,
   };
   upsertJob(job.workspaceRoot, running);
@@ -788,15 +903,18 @@ async function runForegroundJob(job, request, runner, asJson) {
 }
 
 function spawnDetachedWorker(cwd, jobId, logFile) {
-  // Send the detached worker's stdout/stderr to the job log so an uncatchable
+  // Send only the detached worker's STDERR to the job log so an uncatchable
   // death (OOM, SIGKILL, a crash before the try/catch) leaves a trace that
-  // `status` surfaces, instead of only a generic "worker is no longer running".
+  // `status` surfaces. The worker runs with --json, so its STDOUT is the full
+  // companion payload (cost/usage JSON) that nobody reads here; routing that to
+  // the log would bury the human-readable appendLogLine entries, so stdout is
+  // discarded. The answer is preserved in the result file.
   let stdio = 'ignore';
   let logFd = null;
   if (logFile) {
     try {
       logFd = fs.openSync(logFile, 'a');
-      stdio = ['ignore', logFd, logFd];
+      stdio = ['ignore', 'ignore', logFd];
     } catch {
       stdio = 'ignore';
     }
@@ -865,6 +983,7 @@ function parseCommonOptions(argv, extra = {}) {
       'max-budget-usd',
       'cwd',
       'job-id',
+      'cost-preset',
     ],
     booleanOptions: [
       'json',
@@ -905,6 +1024,7 @@ async function handleSetup(argv) {
 async function handleReview(argv, reviewName) {
   const { options, positionals } = parseCommonOptions(argv);
   rejectWriteOptions(options);
+  const preset = resolveCostPreset(options);
   const cwd = resolveCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const focusText = positionals.join(' ').trim();
@@ -921,8 +1041,8 @@ async function handleReview(argv, reviewName) {
     cwd,
     base: options.base ?? null,
     scope,
-    model: options.model ?? null,
-    effort: options.effort ?? null,
+    model: options.model ?? preset.model ?? null,
+    effort: options.effort ?? preset.effort ?? null,
     timeoutMs: coerceTimeoutMs(options['timeout-ms']),
     maxBudgetUsd: options['max-budget-usd'] ?? null,
     strictSensitiveContext: Boolean(options['strict-sensitive-context']),
@@ -950,6 +1070,7 @@ async function handleTask(argv) {
       'max-budget-usd',
       'cwd',
       'kind',
+      'cost-preset',
     ],
     booleanOptions: [
       'json',
@@ -963,6 +1084,7 @@ async function handleTask(argv) {
     aliasMap: { C: 'cwd', m: 'model' },
   });
   rejectWriteOptions(options);
+  const preset = resolveCostPreset(options);
   if (options.kind !== undefined && !isValidTaskKind(options.kind)) {
     throw new Error(
       `Unknown task kind "${options.kind}". Use diagnose, plan, or research.`,
@@ -989,8 +1111,8 @@ async function handleTask(argv) {
     cwd,
     prompt,
     resumeSessionId: latest?.sessionId ?? null,
-    model: options.model ?? null,
-    effort: options.effort ?? null,
+    model: options.model ?? preset.model ?? null,
+    effort: options.effort ?? preset.effort ?? null,
     timeoutMs: coerceTimeoutMs(options['timeout-ms']),
     maxBudgetUsd: options['max-budget-usd'] ?? null,
     strictSensitiveContext: Boolean(options['strict-sensitive-context']),
@@ -1058,6 +1180,15 @@ function publicJob(job) {
   return rest;
 }
 
+// Surface the human answer first; keep the raw log tail available separately.
+function previewForJob(job, result) {
+  const answerPreview =
+    [result?.answer, result?.summary, job?.summary]
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .find(Boolean) ?? null;
+  return { answerPreview, logTail: readLogPreview(job?.logFile) };
+}
+
 function handleStatus(argv) {
   const { options, positionals } = parseCommonOptions(argv);
   const cwd = resolveCwd(options);
@@ -1074,14 +1205,23 @@ function handleStatus(argv) {
     outputJobNotFound('status', reference, workspaceRoot, Boolean(options.json));
     return;
   }
+  const now = Date.now();
   const report = {
     ok: true,
     kind: 'status',
     workspaceRoot,
-    jobs: jobs.map((job) => ({
-      ...publicJob(job),
-      logPreview: readLogPreview(job.logFile),
-    })),
+    jobs: jobs.map((job) => {
+      const terminal = !['queued', 'running'].includes(job.status);
+      const result = terminal ? readResultFile(workspaceRoot, job.id) : null;
+      const { answerPreview, logTail } = previewForJob(job, result);
+      return {
+        ...publicJob(job),
+        ...jobLiveness(job, now),
+        answerPreview,
+        logTail,
+        logPreview: logTail, // backward-compat alias
+      };
+    }),
   };
   output(report, renderStatus(report), Boolean(options.json));
 }
@@ -1102,7 +1242,28 @@ function handleResult(argv) {
     outputJobNotFound('result', reference, workspaceRoot, Boolean(options.json));
     return;
   }
+  // The job exists but has not produced a result yet: report an explicit
+  // pending state (exit 0, poll-again) rather than an ambiguous ok:false/null.
+  if (job && ['queued', 'running'].includes(job.status)) {
+    output(
+      {
+        ok: false,
+        kind: 'result',
+        status: job.status,
+        errorCode: 'not_ready',
+        error: `Job ${job.id} is still ${job.status}; no result yet. Poll with action status, or fetch the result once it completes.`,
+        workspaceRoot,
+        job: publicJob(job),
+        result: null,
+        answer: null,
+      },
+      renderStoredResult({ job, result: null }),
+      Boolean(options.json),
+    );
+    return;
+  }
   const result = job ? readResultFile(workspaceRoot, job.id) : null;
+  const { answerPreview } = previewForJob(job, result);
   const ok = Boolean(
     job && result && (result.ok ?? job.status === 'completed'),
   );
@@ -1114,6 +1275,7 @@ function handleResult(argv) {
       job: publicJob(job),
       result,
       answer: result?.answer ?? null,
+      answerPreview,
     },
     renderStoredResult({ job, result }),
     Boolean(options.json),

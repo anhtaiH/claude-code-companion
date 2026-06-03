@@ -10,7 +10,8 @@
         "approve",
         "approve-with-nits",
         "needs-attention",
-        "changes-needed"
+        "changes-needed",
+        "no-changes"
       ]
     },
     "summary": {

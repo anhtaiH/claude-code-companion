@@ -598,6 +598,7 @@ const VERDICTS = [
   'approve-with-nits',
   'needs-attention',
   'changes-needed',
+  'no-changes',
 ];
 const VERDICT_ALIASES = {
   approved: 'approve',
@@ -612,6 +613,16 @@ const VERDICT_ALIASES = {
   reject: 'changes-needed',
   block: 'changes-needed',
   blocked: 'changes-needed',
+  // "Nothing to review" is a clean, non-actionable outcome, not a problem.
+  no_changes: 'no-changes',
+  'no changes': 'no-changes',
+  no_changes_to_review: 'no-changes',
+  'no changes to review': 'no-changes',
+  'nothing to review': 'no-changes',
+  noop: 'no-changes',
+  'no-op': 'no-changes',
+  none: 'no-changes',
+  empty: 'no-changes',
 };
 
 // Clamp a passthrough verdict to the schema enum. Unknown verdicts become

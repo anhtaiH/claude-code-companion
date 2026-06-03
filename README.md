@@ -57,6 +57,10 @@ $claude cancel <job-id>
   them in the background and fetch the result later. The default timeout is 30
   minutes.
 - **Focus narrows the lens** instead of reaching for a separate command.
+- **Cheap probes.** For a smoke/ping call, add `--cost-preset cheap` (MCP
+  `cost_preset`) to use a smaller model at low effort; an explicit `--model` or
+  `--effort` overrides it. A review of a clean working tree returns instantly
+  without calling Claude.
 - **Block secret-like context** with `--strict-sensitive-context` (MCP
   `strict_sensitive_context`) when you want a run to stop rather than warn.
 - **Restart Codex after upgrading** so the new tool schema loads.

@@ -6,6 +6,7 @@ import process from 'node:process';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { ALL_KINDS } from './lib/kinds.mjs';
+import { terminateProcessTree } from './lib/process.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const COMPANION = path.join(SCRIPT_DIR, 'claude-companion.mjs');
@@ -79,6 +80,12 @@ const tools = [
           enum: ['low', 'medium', 'high', 'xhigh', 'max'],
           description:
             'Optional reasoning effort override passed to Claude Code. Defaults to max.',
+        },
+        cost_preset: {
+          type: 'string',
+          enum: ['cheap'],
+          description:
+            'Optional cost preset for cheap probe or smoke calls. "cheap" uses a smaller model and low effort; an explicit model or effort overrides it. Substantive work should omit this and keep the opus[1m]/max default.',
         },
         timeout_ms: {
           type: 'integer',
@@ -241,6 +248,7 @@ function pushSharedRuntimeArgs(args, input = {}) {
   pushArg(args, 'cwd', input.cwd);
   pushArg(args, 'model', input.model);
   pushArg(args, 'effort', input.effort);
+  pushArg(args, 'cost-preset', input.cost_preset);
   pushArg(args, 'timeout-ms', input.timeout_ms);
   pushArg(args, 'max-budget-usd', input.max_budget_usd);
   pushArg(args, 'strict-sensitive-context', input.strict_sensitive_context);
@@ -339,15 +347,37 @@ function companionArgs(input = {}) {
   );
 }
 
+// In-flight companion children, so a server shutdown can reap them (and the
+// Claude grandchild) instead of leaving an orphaned foreground job billing.
+const activeChildren = new Set();
+
+function killActiveChildren() {
+  for (const child of activeChildren) {
+    if (child.pid) terminateProcessTree(child.pid);
+  }
+  activeChildren.clear();
+}
+
 function runCompanion(args, cwd) {
   return new Promise((resolve) => {
+    // Detached so the companion leads its own process group; terminating that
+    // group on shutdown reaps both the companion and its `claude` child.
     const child = spawn(process.execPath, args, {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    activeChildren.add(child);
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      activeChildren.delete(child);
+      resolve(result);
+    };
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString('utf8');
     });
@@ -355,11 +385,21 @@ function runCompanion(args, cwd) {
       stderr += chunk.toString('utf8');
     });
     child.on('error', (error) => {
-      resolve({ status: 1, stdout, stderr: error.message || stderr });
+      finish({ status: 1, stdout, stderr: error.message || stderr });
     });
     child.on('close', (status) => {
-      resolve({ status: status ?? 1, stdout, stderr });
+      finish({ status: status ?? 1, stdout, stderr });
     });
+  });
+}
+
+// Reap in-flight children when the server is asked to terminate. Driven by
+// signals only: stdin EOF must drain pending responses (the readline loop is
+// in-flight-aware), so it is deliberately not used as a kill trigger.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    killActiveChildren();
+    process.exit(0);
   });
 }
 

@@ -22,6 +22,7 @@ import {
   MIN_CLAUDE_CODE_VERSION,
   normalizeReviewPayload,
 } from '../plugins/claude-code-companion/scripts/lib/claude.mjs';
+import { jobLiveness } from '../plugins/claude-code-companion/scripts/lib/process.mjs';
 import {
   hasSecretLikeText,
   redactSecretLikeText,
@@ -169,6 +170,7 @@ test('setup reports ready with fake Claude installed and authenticated', () => {
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ready, true);
+  assert.equal(payload.stateWritable, true);
   assert.match(payload.claude.detail, /Claude Code/);
   assert.equal(payload.claude.version, '2.1.158');
   assert.equal(payload.claude.minimumVersion, '2.1.158');
@@ -1029,6 +1031,9 @@ test('gitignored secret-like files are skipped from outbound scanning', () => {
   run('git', ['add', '.gitignore'], { cwd: repo });
   run('git', ['commit', '-m', 'ignore secrets'], { cwd: repo });
   fs.writeFileSync(path.join(repo, 'secrets.env'), FAKE_PASSWORD_ASSIGNMENT);
+  // A real tracked change so the review is not short-circuited as empty; the
+  // gitignored secrets.env must still be skipped from outbound scanning.
+  fs.writeFileSync(path.join(repo, 'README.md'), '# Test repo\nchanged\n');
   const env = buildEnv(binDir);
 
   const result = run(
@@ -1040,6 +1045,7 @@ test('gitignored secret-like files are skipped from outbound scanning', () => {
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.review.verdict, 'changes-needed');
+  assert.deepEqual(payload.warnings, []);
 });
 
 test('strict sensitive-context mode blocks before Claude is invoked', () => {
@@ -1185,6 +1191,8 @@ test('background task can be listed and cancelled', () => {
   assert.equal(statusJob.id, jobId);
   assert.equal(statusJob.model, 'opus[1m]');
   assert.equal(statusJob.effort, 'max');
+  assert.equal(statusJob.pidAlive, true);
+  assert.equal(typeof statusJob.elapsedMs, 'number');
 
   const cancel = run(
     process.execPath,
@@ -2580,4 +2588,353 @@ test('install.sh succeeds when codex mcp registration is unsupported', () => {
   });
   // MCP registration is best-effort: a Codex without `codex mcp` is non-fatal.
   assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test('no-changes verdict synonyms normalize to no-changes', () => {
+  for (const raw of ['no_changes_to_review', 'noop', 'none', 'no changes']) {
+    const normalized = normalizeReviewPayload(
+      JSON.stringify({ verdict: raw, summary: 'x', findings: [] }),
+    );
+    assert.equal(normalized.parsed.verdict, 'no-changes', raw);
+  }
+});
+
+test('review short-circuits a clean working tree without invoking Claude', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.degraded, false);
+  assert.equal(payload.review.verdict, 'no-changes');
+  assert.deepEqual(payload.review.findings, []);
+  assert.equal(payload.companion.resultKind, 'no-changes');
+  assert.equal(payload.claude, null);
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('adversarial review short-circuits a clean working tree', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'adversarial-review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review.verdict, 'no-changes');
+  assert.equal(payload.kind, 'adversarial-review');
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('review still runs when untracked files are present', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, 'extra.txt'), 'new file\n');
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review.verdict, 'changes-needed');
+  assert.equal(fs.existsSync(argsFile), true);
+});
+
+test('repo-scope review never short-circuits', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--scope', 'repo', '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.targetLabel, 'repository review');
+  assert.equal(fs.existsSync(argsFile), true);
+});
+
+test('branch review short-circuits when the branch matches its base', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--base', 'main', '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.review.verdict, 'no-changes');
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('completed background job keeps the log clean and previews the answer', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const started = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--background', '--json', 'inspect'],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const jobId = JSON.parse(started.stdout).jobId;
+
+  let statusJob = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const status = run(
+      process.execPath,
+      [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+      { env },
+    );
+    statusJob = JSON.parse(status.stdout).jobs[0];
+    if (statusJob?.status === 'completed') break;
+    sleep(50);
+  }
+
+  assert.equal(statusJob.status, 'completed');
+  assert.equal(statusJob.answerPreview, 'Handled task');
+  const logTailText = JSON.stringify(statusJob.logTail);
+  assert.equal(logTailText.includes('modelUsage'), false);
+  assert.equal(logTailText.includes('total_cost_usd'), false);
+});
+
+test('result for a still-running job returns an explicit pending state', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'slow' });
+
+  const started = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--background', '--json', 'slow probe'],
+    { env },
+  );
+  assert.equal(started.status, 0, started.stderr);
+  const jobId = JSON.parse(started.stdout).jobId;
+
+  let active = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const status = run(
+      process.execPath,
+      [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+      { env },
+    );
+    const job = JSON.parse(status.stdout).jobs[0];
+    if (job && ['queued', 'running'].includes(job.status)) {
+      active = true;
+      break;
+    }
+    sleep(50);
+  }
+  assert.ok(active);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'result', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.errorCode, 'not_ready');
+  assert.ok(['queued', 'running'].includes(payload.status));
+  assert.match(payload.error, /still (queued|running)/i);
+  assert.equal(payload.result, null);
+
+  run(
+    process.execPath,
+    [COMPANION, 'cancel', '--cwd', repo, jobId, '--json'],
+    { env },
+  );
+});
+
+test('jobLiveness reports pid liveness, elapsed, and a liveness hint', () => {
+  const dead = jobLiveness({
+    status: 'running',
+    pid: 99999999,
+    createdAt: new Date(Date.now() - 1000).toISOString(),
+  });
+  assert.equal(dead.pidAlive, false);
+  assert.equal(dead.liveness, 'stale');
+  assert.ok(dead.elapsedMs >= 0);
+
+  const live = jobLiveness({
+    status: 'running',
+    pid: process.pid,
+    createdAt: new Date().toISOString(),
+  });
+  assert.equal(live.pidAlive, true);
+  assert.ok(['alive', 'quiet', 'possibly-blocked'].includes(live.liveness));
+
+  const done = jobLiveness({
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+    createdAt: new Date(Date.now() - 5000).toISOString(),
+  });
+  assert.equal(done.pidAlive, false);
+  assert.equal(done.liveness, 'completed');
+  assert.ok(done.elapsedMs >= 0);
+});
+
+test('jobLiveness flags quiet and possibly-blocked from log mtime', () => {
+  const dir = makeTempDir();
+  const logFile = path.join(dir, 'job.log');
+  fs.writeFileSync(logFile, 'hi\n');
+  const now = Date.now();
+  const base = {
+    status: 'running',
+    pid: process.pid,
+    createdAt: new Date(now - 1000).toISOString(),
+    logFile,
+  };
+  fs.utimesSync(logFile, new Date(now - 60_000), new Date(now - 60_000));
+  assert.equal(jobLiveness(base, now).liveness, 'quiet');
+  fs.utimesSync(logFile, new Date(now - 6 * 60_000), new Date(now - 6 * 60_000));
+  assert.equal(jobLiveness(base, now).liveness, 'possibly-blocked');
+});
+
+test('cheap cost preset lowers model and effort and drops ultracode', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--cost-preset', 'cheap', '--json', 'probe'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--model') + 1], 'haiku');
+  assert.equal(args[args.indexOf('--effort') + 1], 'low');
+  assert.equal(args.includes('--settings'), false);
+});
+
+test('explicit model overrides the cheap cost preset', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--cost-preset',
+      'cheap',
+      '--model',
+      'sonnet',
+      '--json',
+      'probe',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+  assert.equal(args[args.indexOf('--model') + 1], 'sonnet');
+});
+
+test('unknown cost preset is rejected', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--cost-preset', 'bogus', '--json', 'probe'],
+    { env },
+  );
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /Unknown cost preset/);
+});
+
+test('MCP server reaps an in-flight foreground job on SIGTERM', async () => {
+  const { spawn } = await import('node:child_process');
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'slow' });
+
+  const server = spawn(process.execPath, [MCP_SERVER], {
+    env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const call = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: {
+      name: 'claude_code',
+      arguments: {
+        action: 'delegate',
+        kind: 'diagnose',
+        cwd: repo,
+        timeout_ms: 30000,
+        prompt: 'slow foreground job',
+      },
+    },
+  };
+  server.stdin.write(`${JSON.stringify(call)}\n`);
+
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const exited = new Promise((resolve) => server.on('exit', () => resolve('exited')));
+  server.kill('SIGTERM');
+  const outcome = await Promise.race([
+    exited,
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+  ]);
+  assert.equal(outcome, 'exited', 'server should exit after SIGTERM');
 });

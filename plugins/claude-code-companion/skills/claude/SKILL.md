@@ -29,6 +29,10 @@ of making the human learn the runtime:
 - Leave `strict_sensitive_context` unset by default. The companion records a
   warning for heuristic secret-like context and continues. Use strict mode only
   when the user explicitly asks for blocking behavior.
+- Keep the default model/effort for real work. For a cheap probe or ping, pass
+  `cost_preset: "cheap"` (smaller model, low effort); an explicit `model` or
+  `effort` overrides it. A `review`/`adversarial_review` on a clean working tree
+  returns a local `no-changes` result instantly, without calling Claude.
 
 ## When To Use
 
@@ -60,7 +64,12 @@ Every result is JSON with a small, stable envelope:
   `-resume` suffix); lifecycle calls use `setup`, `status`, `result`, `cancel`,
   or `queued`.
 - `answer` is the single best string to relay; reviews also carry structured
-  `review.verdict` and `review.findings`.
+  `review.verdict` and `review.findings`. A review of an empty target reports
+  `verdict: "no-changes"` (a clean, non-actionable outcome, not a problem).
+- Fetching `result` for a job that is still queued/running returns `ok: false`
+  with `errorCode: "not_ready"` and exit 0 — poll `status` and retry, do not
+  treat it as a failure. `status` includes liveness (`pidAlive`, `elapsedMs`,
+  `lastOutputAgeMs`, `liveness`) so you can tell working-quietly from stuck.
 
 Exit status (MCP `isError`) flags whether the call itself should stop you: a
 not-ready `setup`, an unknown `job_id`, invalid arguments, and a degraded live

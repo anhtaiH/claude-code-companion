@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import process from 'node:process';
 
 export function runSync(command, args = [], options = {}) {
@@ -53,6 +54,43 @@ export function isPidRunning(pid) {
   } catch {
     return false;
   }
+}
+
+// Spawn-free last-modified time of a file in ms, or null if absent/unreadable.
+// Used as a cheap, portable "last output" proxy for job liveness.
+export function statMtimeMs(filePath) {
+  if (!filePath) return null;
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+const STALE_AFTER_MS = 5 * 60 * 1000;
+const QUIET_AFTER_MS = 30 * 1000;
+
+// Cheap, portable liveness signal so a caller can tell working-quietly from
+// hung from stale without spawning anything. "Last output" is the job log's
+// mtime; CPU/RSS/child-count are deliberately omitted (platform-specific).
+export function jobLiveness(job, now = Date.now()) {
+  const active = ['queued', 'running'].includes(job.status);
+  const startMs = Date.parse(job.startedAt ?? job.createdAt ?? '') || null;
+  const endMs = active ? now : Date.parse(job.completedAt ?? '') || now;
+  const elapsedMs = startMs != null ? Math.max(0, endMs - startMs) : null;
+  const mtime = statMtimeMs(job.logFile);
+  const lastOutputAt = mtime ? new Date(mtime).toISOString() : null;
+  const lastOutputAgeMs = mtime != null ? Math.max(0, now - mtime) : null;
+  const pidAlive = active ? isPidRunning(job.pid) : false;
+  let liveness;
+  if (!active) liveness = job.status;
+  else if (!pidAlive) liveness = 'stale';
+  else if (lastOutputAgeMs != null && lastOutputAgeMs > STALE_AFTER_MS)
+    liveness = 'possibly-blocked';
+  else if (lastOutputAgeMs != null && lastOutputAgeMs > QUIET_AFTER_MS)
+    liveness = 'quiet';
+  else liveness = 'alive';
+  return { pidAlive, elapsedMs, lastOutputAt, lastOutputAgeMs, liveness };
 }
 
 export function sleepSync(ms) {

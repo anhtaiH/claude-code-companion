@@ -46,6 +46,7 @@ export function renderSetup(report) {
     `- claude: ${report.claude.detail}`,
     `- auth: ${report.auth.detail}`,
     `- state: ${report.stateDir}`,
+    `- state writable: ${report.stateWritable === false ? 'no' : 'yes'}`,
     `- workspace: ${report.workspaceRoot}`,
     `- default model: ${report.defaults.model}`,
     `- default effort: ${report.defaults.effort}`,
@@ -112,6 +113,18 @@ export function renderQueued(payload) {
   return `${payload.title} started as ${payload.jobId}.${workspace} Check status with the claude_code tool using action "status".\n`;
 }
 
+function livenessLine(job) {
+  if (!job.liveness) return null;
+  const parts = [`liveness: ${job.liveness}`];
+  if (typeof job.elapsedMs === 'number') {
+    parts.push(`elapsed ${Math.round(job.elapsedMs / 1000)}s`);
+  }
+  if (typeof job.lastOutputAgeMs === 'number') {
+    parts.push(`last output ${Math.round(job.lastOutputAgeMs / 1000)}s ago`);
+  }
+  return `  ${parts.join(', ')}`;
+}
+
 export function renderStatus(report) {
   if (!report.jobs.length) return 'No Claude Code Companion jobs found.\n';
   const lines = ['Claude Code Companion jobs:', ''];
@@ -121,8 +134,17 @@ export function renderStatus(report) {
       `- ${job.id} ${job.status} ${job.kind}${session} - ${job.summary ?? ''}`.trim(),
     );
     if (job.phase) lines.push(`  phase: ${job.phase}`);
-    const preview = readLogPreview(job.logFile, 3);
-    if (preview.length) lines.push(...preview.map((line) => `  ${line}`));
+    const liveness = livenessLine(job);
+    if (liveness) lines.push(liveness);
+    // Lead with the human answer; fall back to the log tail for active jobs.
+    if (job.answerPreview) {
+      lines.push(`  answer: ${job.answerPreview.split(/\r?\n/)[0].slice(0, 200)}`);
+    } else {
+      const tail = Array.isArray(job.logTail)
+        ? job.logTail.slice(-3)
+        : readLogPreview(job.logFile, 3);
+      if (tail.length) lines.push(...tail.map((line) => `  ${line}`));
+    }
   }
   return `${lines.join('\n')}\n`;
 }
