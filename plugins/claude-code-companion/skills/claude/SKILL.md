@@ -36,8 +36,9 @@ of making the human learn the runtime:
 
 ## When To Use
 
-- Use `action: "setup"` when the user asks for setup, doctor, readiness, or
-  auth checks.
+- Use `action: "setup"` for setup, doctor, readiness, ping, or auth checks. It
+  is the cost-free, no-model health check (Claude, auth, version, and
+  `stateWritable`); use it instead of delegating a tiny prompt just to probe.
 - Use `kind: "review"` before shipping when another model should inspect the
   current diff.
 - Use `kind: "adversarial_review"` when the risk is about assumptions,
@@ -66,10 +67,13 @@ Every result is JSON with a small, stable envelope:
 - `answer` is the single best string to relay; reviews also carry structured
   `review.verdict` and `review.findings`. A review of an empty target reports
   `verdict: "no-changes"` (a clean, non-actionable outcome, not a problem).
-- Fetching `result` for a job that is still queued/running returns `ok: false`
-  with `errorCode: "not_ready"` and exit 0 — poll `status` and retry, do not
-  treat it as a failure. `status` includes liveness (`pidAlive`, `elapsedMs`,
-  `lastOutputAgeMs`, `liveness`) so you can tell working-quietly from stuck.
+- Fetching `result` for a job that is still queued/running returns `ok: false`,
+  `terminal: false`, and `errorCode: "not_ready"` at exit 0 — poll `status` and
+  retry; `terminal: false` means "not done yet", not a failure. A fetched
+  terminal job reports `terminal: true`.
+- `status` includes liveness (`pidAlive`, `elapsedMs`, `lastOutputAgeMs`,
+  `liveness`) and previews: `requestPreview` (what was asked, while running) and
+  `answerPreview` (the answer, once complete) — only one is populated at a time.
 
 Exit status (MCP `isError`) flags whether the call itself should stop you: a
 not-ready `setup`, an unknown `job_id`, invalid arguments, and a degraded live

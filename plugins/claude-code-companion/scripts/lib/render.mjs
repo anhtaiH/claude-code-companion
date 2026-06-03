@@ -136,9 +136,12 @@ export function renderStatus(report) {
     if (job.phase) lines.push(`  phase: ${job.phase}`);
     const liveness = livenessLine(job);
     if (liveness) lines.push(liveness);
-    // Lead with the human answer; fall back to the log tail for active jobs.
+    // Lead with the human answer once terminal; while active show the request;
+    // otherwise fall back to the log tail.
     if (job.answerPreview) {
       lines.push(`  answer: ${job.answerPreview.split(/\r?\n/)[0].slice(0, 200)}`);
+    } else if (job.requestPreview) {
+      lines.push(`  request: ${job.requestPreview.split(/\r?\n/)[0].slice(0, 200)}`);
     } else {
       const tail = Array.isArray(job.logTail)
         ? job.logTail.slice(-3)

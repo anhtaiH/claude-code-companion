@@ -37,7 +37,7 @@ const tools = [
           type: 'string',
           enum: ['setup', 'delegate', 'status', 'result', 'cancel'],
           description:
-            'Use setup to check readiness, delegate to start Claude work, status to inspect jobs, result to fetch a completed job, and cancel to stop a running job.',
+            'Use setup as the fast, no-model readiness/ping check (verifies Claude, auth, version, and state-dir writability; never spends model budget). delegate starts Claude work — pass cost_preset "cheap" for a low-cost probe. status inspects jobs, result fetches a job result, and cancel stops a running job.',
         },
         kind: {
           type: 'string',

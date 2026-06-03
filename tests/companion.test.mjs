@@ -1193,6 +1193,9 @@ test('background task can be listed and cancelled', () => {
   assert.equal(statusJob.effort, 'max');
   assert.equal(statusJob.pidAlive, true);
   assert.equal(typeof statusJob.elapsedMs, 'number');
+  // While running, the request preview is populated and the answer is not yet.
+  assert.equal(typeof statusJob.requestPreview, 'string');
+  assert.equal(statusJob.answerPreview, null);
 
   const cancel = run(
     process.execPath,
@@ -1240,6 +1243,7 @@ test('background task completes and result is fetched without transcript recover
   const resultPayload = JSON.parse(result.stdout);
   assert.equal(resultPayload.result.rawOutput, 'Handled task');
   assert.equal(resultPayload.ok, true);
+  assert.equal(resultPayload.terminal, true);
   assert.equal(resultPayload.kind, 'result');
   assert.equal(resultPayload.answer, 'Handled task');
 });
@@ -2734,6 +2738,8 @@ test('completed background job keeps the log clean and previews the answer', () 
 
   assert.equal(statusJob.status, 'completed');
   assert.equal(statusJob.answerPreview, 'Handled task');
+  // Completed job: answer populated, request preview dropped (no overload).
+  assert.equal(statusJob.requestPreview, null);
   const logTailText = JSON.stringify(statusJob.logTail);
   assert.equal(logTailText.includes('modelUsage'), false);
   assert.equal(logTailText.includes('total_cost_usd'), false);
@@ -2777,6 +2783,7 @@ test('result for a still-running job returns an explicit pending state', () => {
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ok, false);
+  assert.equal(payload.terminal, false);
   assert.equal(payload.errorCode, 'not_ready');
   assert.ok(['queued', 'running'].includes(payload.status));
   assert.match(payload.error, /still (queued|running)/i);

@@ -1183,13 +1183,22 @@ function publicJob(job) {
   return rest;
 }
 
-// Surface the human answer first; keep the raw log tail available separately.
+// Surface previews without semantic overload: while a job is active its summary
+// is the request (no answer yet), so expose it as `requestPreview` and leave
+// `answerPreview` null; once terminal, expose the answer and drop the request
+// preview. The raw log tail stays available separately.
 function previewForJob(job, result) {
-  const answerPreview =
-    [result?.answer, result?.summary, job?.summary]
-      .map((value) => (typeof value === 'string' ? value.trim() : ''))
-      .find(Boolean) ?? null;
-  return { answerPreview, logTail: readLogPreview(job?.logFile) };
+  const pick = (...values) =>
+    values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) ??
+    null;
+  const active = ['queued', 'running'].includes(job?.status);
+  return {
+    requestPreview: active ? pick(job?.summary) : null,
+    answerPreview: active
+      ? null
+      : pick(result?.answer, result?.summary, job?.summary),
+    logTail: readLogPreview(job?.logFile),
+  };
 }
 
 function handleStatus(argv) {
@@ -1216,10 +1225,14 @@ function handleStatus(argv) {
     jobs: jobs.map((job) => {
       const terminal = !['queued', 'running'].includes(job.status);
       const result = terminal ? readResultFile(workspaceRoot, job.id) : null;
-      const { answerPreview, logTail } = previewForJob(job, result);
+      const { requestPreview, answerPreview, logTail } = previewForJob(
+        job,
+        result,
+      );
       return {
         ...publicJob(job),
         ...jobLiveness(job, now),
+        requestPreview,
         answerPreview,
         logTail,
         logPreview: logTail, // backward-compat alias
@@ -1251,6 +1264,9 @@ function handleResult(argv) {
     output(
       {
         ok: false,
+        // Not done yet — distinct from a failed run, so consumers can branch on
+        // `terminal` instead of mistaking ok:false for a hard failure.
+        terminal: false,
         kind: 'result',
         status: job.status,
         errorCode: 'not_ready',
@@ -1266,18 +1282,23 @@ function handleResult(argv) {
     return;
   }
   const result = job ? readResultFile(workspaceRoot, job.id) : null;
-  const { answerPreview } = previewForJob(job, result);
+  const { requestPreview, answerPreview } = previewForJob(job, result);
+  const terminal = Boolean(
+    job && !['queued', 'running'].includes(job.status),
+  );
   const ok = Boolean(
     job && result && (result.ok ?? job.status === 'completed'),
   );
   output(
     {
       ok,
+      terminal,
       kind: 'result',
       workspaceRoot,
       job: publicJob(job),
       result,
       answer: result?.answer ?? null,
+      requestPreview,
       answerPreview,
     },
     renderStoredResult({ job, result }),
