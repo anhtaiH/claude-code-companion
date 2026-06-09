@@ -25,6 +25,7 @@ import {
 import {
   binaryAvailable,
   isPidRunning,
+  isWithinSpawnGrace,
   jobLiveness,
   nowIso,
   terminateProcessTree,
@@ -39,7 +40,6 @@ import {
 } from './lib/render.mjs';
 import {
   appendLogLine,
-  ensureStateDir,
   findJob,
   findIndexedWorkspaceRoot,
   findLatestCompletedTask,
@@ -78,12 +78,14 @@ function printUsage() {
     [
       'Usage:',
       '  node scripts/claude-companion.mjs setup [--cwd <path>] [--json]',
-      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch|repo] [--model <model>] [--effort <level>] [--timeout-ms <ms>] [--strict-sensitive-context] [--json]',
+      '  node scripts/claude-companion.mjs review [--background] [--base <ref>] [--scope auto|working-tree|branch|repo] [--focus <text>] [--model <model>] [--effort <level>] [--cost-preset cheap] [--timeout-ms <ms>] [--max-budget-usd <usd>] [--strict-sensitive-context] [--json] [focus text]',
       '  node scripts/claude-companion.mjs adversarial-review [same flags as review] [focus text]',
-      '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--model <model>] [--effort <level>] [--strict-sensitive-context] [prompt]',
+      '  node scripts/claude-companion.mjs task [--kind <kind>] [--background] [--resume-last|--resume] [--fresh] [--focus <text>] [--model <model>] [--effort <level>] [--cost-preset cheap] [--timeout-ms <ms>] [--max-budget-usd <usd>] [--strict-sensitive-context] [--json] [prompt]',
       '  node scripts/claude-companion.mjs status [job-id] [--all] [--json]',
       '  node scripts/claude-companion.mjs result [job-id] [--json]',
       '  node scripts/claude-companion.mjs cancel [job-id] [--json]',
+      '',
+      'Free text (prompt or focus) is positional; put it after -- when it starts with a dash.',
     ].join('\n'),
   );
 }
@@ -145,23 +147,40 @@ function loadPromptTemplate(name) {
   return fs.readFileSync(path.join(ROOT_DIR, 'prompts', `${name}.md`), 'utf8');
 }
 
+// Single-pass substitution: a value that itself contains a `{{...}}` token
+// (for example a diff that quotes this template) must stay literal instead of
+// being re-substituted by a later iteration.
 function interpolate(template, values) {
-  let text = template;
-  for (const [key, value] of Object.entries(values)) {
-    text = text.replaceAll(`{{${key}}}`, String(value ?? ''));
-  }
-  return text;
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (token, key) =>
+    Object.hasOwn(values, key) ? String(values[key] ?? '') : token,
+  );
 }
 
+// First non-empty trimmed string, for error texts where '' must fall through
+// (`??` keeps empty strings, which would surface as a blank answer).
+function firstNonEmpty(...values) {
+  return (
+    values
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .find(Boolean) ?? ''
+  );
+}
+
+// Write-capable flags are declared as parseable on the delegation commands so
+// they reach this check and get the purposeful read-only refusal instead of a
+// generic unknown-option error.
+const REJECTED_WRITE_FLAGS = [
+  'write',
+  'edit',
+  'dangerously-skip-permissions',
+  'allow-dangerously-skip-permissions',
+  'permission-mode',
+];
+
 function rejectWriteOptions(options) {
-  const disallowed = [
-    'write',
-    'edit',
-    'dangerously-skip-permissions',
-    'allow-dangerously-skip-permissions',
-    'permission-mode',
-  ];
-  const found = disallowed.filter((key) => options[key] !== undefined);
+  const found = REJECTED_WRITE_FLAGS.filter(
+    (key) => options[key] !== undefined,
+  );
   if (found.length) {
     throw new Error(
       `Claude Code Companion is read-only; refusing option(s): ${found.join(', ')}`,
@@ -186,7 +205,9 @@ function probeStateWritable(workspaceRoot) {
 
 function buildSetupReport(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  ensureStateDir(workspaceRoot);
+  // State-dir creation happens inside probeStateWritable; creating it here
+  // unguarded would crash setup on an unwritable state root instead of
+  // reporting ready: false with a remediation step.
   const node = binaryAvailable('node', ['--version'], { cwd });
   const claude = getClaudeAvailability(cwd);
   const auth = claude.available
@@ -611,7 +632,10 @@ async function executeReviewRun(request) {
     fallbackReview(
       claude.status === 0
         ? `Claude output could not be parsed: ${parsed.parseError ?? claude.error ?? 'unknown parse error'}`
-        : `Claude review failed: ${claude.error ?? claude.stderr.trim() ?? `exit ${claude.status}`}`,
+        : `Claude review failed: ${
+            firstNonEmpty(claude.error, claude.stderr) ||
+            `exit ${claude.status}`
+          }`,
     );
   const companion = reviewCompanionHealth({
     parsed,
@@ -787,9 +811,8 @@ async function executeTaskRun(request) {
     resumeSessionId: request.resumeSessionId,
   });
   const resultText = String(claude.resultText ?? '');
-  const errorText = String(
-    claude.error ?? claude.stderr?.trim() ?? `exit ${claude.status}`,
-  );
+  const errorText =
+    firstNonEmpty(claude.error, claude.stderr) || `exit ${claude.status}`;
 
   const degraded = claude.status !== 0 || !resultText.trim();
   const payload = {
@@ -975,11 +998,24 @@ function enqueueBackgroundJob(cwd, job, request, asJson) {
   output(payload, renderQueued(payload), asJson);
 }
 
+// Combine positional free text with an explicit --focus flag. The command
+// docs advertise --focus, so it must be honored here too, not only via MCP.
+function combineFocusText(positionalText, focusOption) {
+  return [
+    positionalText,
+    focusOption ? `Focus: ${String(focusOption).trim()}` : '',
+  ]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 function parseCommonOptions(argv, extra = {}) {
   return parseArgs(argv, {
     valueOptions: [
       'base',
       'scope',
+      'focus',
       'model',
       'effort',
       'timeout-ms',
@@ -1001,6 +1037,7 @@ function parseCommonOptions(argv, extra = {}) {
       // it parses as a recognized boolean rather than silently consuming the
       // following token.
       'allow-sensitive-context',
+      ...(extra.booleanOptions ?? []),
     ],
     aliasMap: { C: 'cwd', m: 'model', ...extra.aliasMap },
   });
@@ -1025,18 +1062,22 @@ async function handleSetup(argv) {
 }
 
 async function handleReview(argv, reviewName) {
-  const { options, positionals } = parseCommonOptions(argv);
+  const { options, positionals } = parseCommonOptions(argv, {
+    booleanOptions: REJECTED_WRITE_FLAGS,
+  });
   rejectWriteOptions(options);
   const preset = resolveCostPreset(options);
   const cwd = resolveCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const focusText = positionals.join(' ').trim();
+  const focusText = combineFocusText(positionals.join(' '), options.focus);
   const scope = options.scope ?? 'auto';
   const targetSummary = options.base
     ? `against ${options.base}`
     : scope === 'repo' || scope === 'repository'
       ? 'repository review'
-      : scope;
+      : scope === 'branch'
+        ? 'branch review'
+        : 'working tree';
   const request = {
     kind: reviewName === 'Adversarial Review' ? 'adversarial-review' : 'review',
     jobClass: 'review',
@@ -1067,6 +1108,7 @@ function readTaskPrompt(positionals) {
 async function handleTask(argv) {
   const { options, positionals } = parseArgs(argv, {
     valueOptions: [
+      'focus',
       'model',
       'effort',
       'timeout-ms',
@@ -1083,6 +1125,7 @@ async function handleTask(argv) {
       'fresh',
       'strict-sensitive-context',
       'allow-sensitive-context',
+      ...REJECTED_WRITE_FLAGS,
     ],
     aliasMap: { C: 'cwd', m: 'model' },
   });
@@ -1103,7 +1146,7 @@ async function handleTask(argv) {
     throw new Error(
       'No completed Claude task session found for this workspace.',
     );
-  const prompt = readTaskPrompt(positionals);
+  const prompt = combineFocusText(readTaskPrompt(positionals), options.focus);
   if (!prompt && !resumeLast)
     throw new Error('Provide a prompt or use --resume-last.');
   const request = {
@@ -1131,18 +1174,24 @@ async function handleTask(argv) {
 }
 
 function refreshRunningJobs(workspaceRoot) {
+  const now = Date.now();
   for (const job of listJobs(workspaceRoot)) {
     if (!['queued', 'running'].includes(job.status)) continue;
     if (job.pid && isPidRunning(job.pid)) continue;
+    // A just-enqueued job has no pid until the parent records the spawned
+    // worker. Give that window a short grace period so a concurrent status
+    // call cannot mark a healthy job failed before its worker exists.
+    if (!job.pid && isWithinSpawnGrace(job, now)) continue;
     const stored = readJobFile(workspaceRoot, job.id);
     if (stored && !['queued', 'running'].includes(stored.status)) {
       upsertJob(workspaceRoot, stored);
       continue;
     }
     // Clear `request` when marking a dead worker failed; otherwise the
-    // unredacted prompt would persist in state.json indefinitely. `null` (not
-    // omission) is required because upsertJob merges over the stored job.
-    upsertJob(workspaceRoot, {
+    // unredacted prompt would persist indefinitely. `null` (not omission) is
+    // required because upsertJob merges over the stored job. The job file is
+    // rewritten too: it carries its own copy of the raw request.
+    const failed = {
       ...job,
       status: 'failed',
       phase: 'failed',
@@ -1150,7 +1199,14 @@ function refreshRunningJobs(workspaceRoot) {
       errorMessage: 'Worker process is no longer running.',
       completedAt: nowIso(),
       request: null,
-    });
+    };
+    upsertJob(workspaceRoot, failed);
+    try {
+      writeJobFile(workspaceRoot, job.id, failed);
+    } catch {
+      // A malformed id or unwritable dir must not break status reporting;
+      // state.json above remains the source of truth.
+    }
   }
 }
 
@@ -1192,11 +1248,17 @@ function previewForJob(job, result) {
     values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) ??
     null;
   const active = ['queued', 'running'].includes(job?.status);
+  // For a terminal job without a stored answer, prefer the failure message
+  // over the request summary — labeling the request as the "answer" misleads
+  // a polling agent. A cancelled job has no answer at all.
+  const answerPreview = active
+    ? null
+    : job?.status === 'cancelled'
+      ? pick(result?.answer, result?.summary)
+      : pick(result?.answer, result?.summary, job?.errorMessage, job?.summary);
   return {
     requestPreview: active ? pick(job?.summary) : null,
-    answerPreview: active
-      ? null
-      : pick(result?.answer, result?.summary, job?.summary),
+    answerPreview,
     logTail: readLogPreview(job?.logFile),
   };
 }

@@ -69,6 +69,17 @@ export function statMtimeMs(filePath) {
 
 const STALE_AFTER_MS = 5 * 60 * 1000;
 const QUIET_AFTER_MS = 30 * 1000;
+// How long a queued job may legitimately sit without a recorded pid: the
+// enqueue path writes the job, spawns the detached worker, then records the
+// worker pid. Within this window a missing pid means "spawn in progress", not
+// "worker died".
+export const SPAWN_GRACE_MS = 15 * 1000;
+
+export function isWithinSpawnGrace(job, now = Date.now()) {
+  const referenceMs =
+    Date.parse(job?.updatedAt ?? job?.createdAt ?? '') || 0;
+  return now - referenceMs < SPAWN_GRACE_MS;
+}
 
 // Cheap, portable liveness signal so a caller can tell working-quietly from
 // hung from stale without spawning anything. "Last output" is the job log's
@@ -84,6 +95,7 @@ export function jobLiveness(job, now = Date.now()) {
   const pidAlive = active ? isPidRunning(job.pid) : false;
   let liveness;
   if (!active) liveness = job.status;
+  else if (!job.pid && isWithinSpawnGrace(job, now)) liveness = 'starting';
   else if (!pidAlive) liveness = 'stale';
   else if (lastOutputAgeMs != null && lastOutputAgeMs > STALE_AFTER_MS)
     liveness = 'possibly-blocked';

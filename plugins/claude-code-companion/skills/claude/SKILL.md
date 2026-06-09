@@ -119,6 +119,10 @@ the equivalent command:
 - Lifecycle:
   `node <script> status|result|cancel --cwd <workspace> --json [job-id]`.
 
+Prompt and focus text is positional; put it after `--` when it starts with a
+dash. A `--focus <text>` flag is also accepted on review and task commands.
+Unknown flags are rejected with an error rather than guessed at.
+
 ## User Phrases
 
 Map common `$claude` requests directly:

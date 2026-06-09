@@ -104,6 +104,19 @@ try {
     );
   }
 
+  // Files the runtime loads lazily; a packaging mistake here would only
+  // surface as a crash on the first real review.
+  for (const runtimeFile of [
+    'prompts/review.md',
+    'prompts/adversarial-review.md',
+    'schemas/review-output.schema.json',
+    'skills/claude/SKILL.md',
+    'scripts/claude-companion.mjs',
+    'scripts/mcp-server.mjs',
+  ]) {
+    assertPath(runtimeFile, 'plugin runtime file');
+  }
+
   for (const requiredFile of [
     'README.md',
     'LICENSE',

@@ -26,6 +26,10 @@ Focus on:
 - missing tests for changed behavior
 - project instruction violations visible in the supplied context
 
+Extra user focus:
+
+{{FOCUS}}
+
 Return strict JSON only, matching the provided schema.
 
 ## Target

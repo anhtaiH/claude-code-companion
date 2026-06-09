@@ -67,7 +67,24 @@ $claude status <job-id>
 ```
 
 The status command refreshes queued or running jobs. If the worker PID is gone,
-the job is marked failed instead of hanging forever.
+the job is marked failed instead of hanging forever. A job that was queued
+within the last few seconds reports liveness `starting` while its worker
+spawns; that is normal, not stale.
+
+## A Call Fails With `Unknown option`
+
+The companion CLI rejects flags it does not recognize instead of guessing what
+was meant. Check the spelling against the usage output (`node
+scripts/claude-companion.mjs help`), and pass free prompt or focus text
+positionally — after `--` when it starts with a dash.
+
+## Delegate Fails With `requires cwd`
+
+The MCP server could not infer the workspace root from the session
+environment, and it refuses to run a delegation against the wrong directory.
+Pass the absolute workspace root as `cwd` on the `claude_code` call. Lifecycle
+calls (`status`, `result`, `cancel`) can still recover a job by id without
+`cwd`.
 
 ## MCP Tool Is Missing
 

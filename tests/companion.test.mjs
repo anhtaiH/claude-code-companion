@@ -21,7 +21,12 @@ import {
 import {
   MIN_CLAUDE_CODE_VERSION,
   normalizeReviewPayload,
+  readJsonSchema,
 } from '../plugins/claude-code-companion/scripts/lib/claude.mjs';
+import {
+  collectReviewContext,
+  resolveReviewTarget,
+} from '../plugins/claude-code-companion/scripts/lib/git.mjs';
 import { jobLiveness } from '../plugins/claude-code-companion/scripts/lib/process.mjs';
 import {
   hasSecretLikeText,
@@ -330,13 +335,18 @@ test('Claude runs with read-only repository tools', () => {
   assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), {
     ultracode: true,
   });
-  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep,Bash,Agent');
+  // No base --tools restriction: on Claude Code 2.1.x it breaks --json-schema
+  // structured output. Read-only posture rides on allowed/disallowed lists.
+  assert.equal(args.includes('--tools'), false);
   assert.match(
     args[args.indexOf('--allowedTools') + 1],
     /Read,Glob,Grep,Agent/,
   );
   assert.match(args[args.indexOf('--allowedTools') + 1], /Bash\(git diff:\*\)/);
-  assert.equal(args[args.indexOf('--disallowedTools') + 1], 'Edit,Write');
+  assert.equal(
+    args[args.indexOf('--disallowedTools') + 1],
+    'Edit,Write,NotebookEdit',
+  );
   assert.equal(args.includes('--dangerously-skip-permissions'), false);
   assert.equal(args.includes('--max-budget-usd'), false);
   const agents = JSON.parse(args[args.indexOf('--agents') + 1]);
@@ -369,6 +379,7 @@ test('Claude runs with read-only repository tools', () => {
   assert.deepEqual(agents['codebase-researcher'].disallowedTools, [
     'Edit',
     'Write',
+    'NotebookEdit',
   ]);
   assert.match(fs.readFileSync(stdinFile, 'utf8'), /dynamic workflows/);
   assert.match(fs.readFileSync(stdinFile, 'utf8'), /subagents/);
@@ -682,6 +693,56 @@ test('secret heuristic catches common token shapes and quoted assignments', () =
   );
   assert.equal(hasSecretLikeText('"token": "' + 'A'.repeat(12) + '"'), true);
   assert.equal(hasSecretLikeText('export API_KEY=' + 'A'.repeat(12)), true);
+});
+
+test('readJsonSchema strips meta keys the structured-output API rejects', () => {
+  const dir = makeTempDir();
+  const schemaPath = path.join(dir, 'schema.json');
+  fs.writeFileSync(
+    schemaPath,
+    JSON.stringify({
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $id: 'https://example.com/review.json',
+      type: 'object',
+      required: ['verdict'],
+      properties: { verdict: { type: 'string' } },
+    }),
+  );
+
+  const schema = readJsonSchema(schemaPath);
+  assert.equal(Object.hasOwn(schema, '$schema'), false);
+  assert.equal(Object.hasOwn(schema, '$id'), false);
+  assert.equal(schema.type, 'object');
+
+  // The shipped review schema must survive the same sanitization.
+  const shipped = readJsonSchema(
+    path.join(PLUGIN_ROOT, 'schemas', 'review-output.schema.json'),
+  );
+  assert.equal(Object.hasOwn(shipped, '$schema'), false);
+  assert.equal(shipped.required.includes('verdict'), true);
+});
+
+test('review reads the structured_output field used by current Claude CLIs', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'structured-output' });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.degraded, false);
+  assert.equal(payload.review.verdict, 'approve-with-nits');
+  assert.equal(payload.review.summary, 'Structured output carried the review.');
+  assert.equal(payload.parseError, null);
+  assert.equal(payload.companion.resultKind, 'structured-review');
+  assert.equal(payload.claude.resultTextSource, 'structured-output');
 });
 
 test('review uses assistant transcript when result event is only progress', () => {
@@ -1117,6 +1178,112 @@ test('strict sensitive-context mode blocks task prompts before Claude is invoked
     ),
   );
   assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('unknown flags are rejected instead of silently consumed', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const argsFile = path.join(makeTempDir(), 'claude-args.json');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_ARGS_FILE: argsFile });
+
+  for (const argv of [
+    ['review', '--cwd', repo, '--scop', 'repo', '--json'],
+    ['review', '--cwd', repo, '--bogus=1', '--json'],
+    ['task', '--cwd', repo, '--knd', 'diagnose', '--json', 'go'],
+    ['status', '--cwd', repo, '--alll', '--json'],
+  ]) {
+    const result = run(process.execPath, [COMPANION, ...argv], { env });
+    assert.notEqual(result.status, 0, argv.join(' '));
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, false);
+    assert.match(payload.error, /Unknown option/);
+  }
+  // No silently-misparsed run ever reached Claude.
+  assert.equal(fs.existsSync(argsFile), false);
+});
+
+test('the documented --focus flag reaches the review prompt', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_STDIN_FILE: stdinFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'review',
+      '--cwd',
+      repo,
+      '--focus',
+      'auth token handling',
+      '--json',
+      'check pagination too',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const stdin = fs.readFileSync(stdinFile, 'utf8');
+  assert.match(stdin, /check pagination too/);
+  assert.match(stdin, /Focus: auth token handling/);
+});
+
+test('the documented --focus flag reaches the task prompt', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_STDIN_FILE: stdinFile });
+
+  const result = run(
+    process.execPath,
+    [
+      COMPANION,
+      'task',
+      '--cwd',
+      repo,
+      '--kind',
+      'research',
+      '--focus',
+      'dependency upgrade risk',
+      '--json',
+      'map the build pipeline',
+    ],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const stdin = fs.readFileSync(stdinFile, 'utf8');
+  assert.match(stdin, /map the build pipeline/);
+  assert.match(stdin, /Focus: dependency upgrade risk/);
+});
+
+test('template tokens quoted inside the diff are not re-substituted', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  fs.writeFileSync(
+    path.join(repo, 'src', 'app.js'),
+    'export const template = "{{FOCUS}} {{DIFF}}";\n',
+  );
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_STDIN_FILE: stdinFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json', 'FOCUS_MARKER_ONCE'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const stdin = fs.readFileSync(stdinFile, 'utf8');
+  // The literal tokens from the diff survive, and the focus text appears
+  // exactly once (in the focus section), not re-injected into the diff.
+  assert.match(stdin, /\{\{FOCUS\}\} \{\{DIFF\}\}/);
+  assert.equal(stdin.split('FOCUS_MARKER_ONCE').length - 1, 1);
 });
 
 test('read-only mode rejects write flags', () => {
@@ -3136,4 +3303,303 @@ test('job worker writes its failure trace to stderr (captured into the log)', ()
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /No stored request/);
+});
+
+test('marking a dead worker failed also scrubs the on-disk job file', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+  const jobId = 'task-dead-scrub';
+  const secretPrompt = `investigate token=${FAKE_OPENAI_KEY}`;
+
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR =
+    env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  try {
+    const dead = {
+      id: jobId,
+      workspaceRoot: repo,
+      kind: 'task',
+      jobClass: 'task',
+      status: 'running',
+      phase: 'running',
+      pid: 99999999,
+      summary: 'dead worker with stored request',
+      updatedAt: new Date(Date.now() - 60_000).toISOString(),
+      request: { jobClass: 'task', prompt: secretPrompt },
+    };
+    upsertJob(repo, dead);
+    writeJobFile(repo, jobId, dead);
+
+    const status = run(
+      process.execPath,
+      [COMPANION, 'status', '--cwd', repo, jobId, '--json'],
+      { env },
+    );
+    assert.equal(status.status, 0, status.stderr);
+    const statusJob = JSON.parse(status.stdout).jobs[0];
+    assert.equal(statusJob.status, 'failed');
+    // The failure message, not the request summary, is previewed as the
+    // outcome.
+    assert.equal(
+      statusJob.answerPreview,
+      'Worker process is no longer running.',
+    );
+
+    const stored = readJobFile(repo, jobId);
+    assert.equal(stored.status, 'failed');
+    assert.ok(!stored.request, 'job file must drop the raw request');
+    assert.equal(
+      fs.readFileSync(resolveJobFile(repo, jobId), 'utf8').includes(FAKE_OPENAI_KEY),
+      false,
+    );
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+});
+
+test('a freshly queued job without a pid survives a concurrent status call', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir);
+  const freshId = 'task-spawn-fresh';
+  const staleId = 'task-spawn-stale';
+
+  const previous = process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  process.env.CLAUDE_CODE_COMPANION_STATE_DIR =
+    env.CLAUDE_CODE_COMPANION_STATE_DIR;
+  try {
+    upsertJob(repo, {
+      id: freshId,
+      workspaceRoot: repo,
+      kind: 'task',
+      jobClass: 'task',
+      status: 'queued',
+      phase: 'queued',
+      pid: null,
+      summary: 'spawn in progress',
+    });
+    upsertJob(repo, {
+      id: staleId,
+      workspaceRoot: repo,
+      kind: 'task',
+      jobClass: 'task',
+      status: 'queued',
+      phase: 'queued',
+      pid: null,
+      summary: 'spawn that never happened',
+      updatedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_COMPANION_STATE_DIR;
+    else process.env.CLAUDE_CODE_COMPANION_STATE_DIR = previous;
+  }
+
+  const fresh = run(
+    process.execPath,
+    [COMPANION, 'status', '--cwd', repo, freshId, '--json'],
+    { env },
+  );
+  assert.equal(fresh.status, 0, fresh.stderr);
+  const freshJob = JSON.parse(fresh.stdout).jobs[0];
+  assert.equal(freshJob.status, 'queued');
+  assert.equal(freshJob.liveness, 'starting');
+
+  const stale = run(
+    process.execPath,
+    [COMPANION, 'status', '--cwd', repo, staleId, '--json'],
+    { env },
+  );
+  assert.equal(stale.status, 0, stale.stderr);
+  const staleJob = JSON.parse(stale.stdout).jobs[0];
+  assert.equal(staleJob.status, 'failed');
+});
+
+test('untracked symlinks are not followed into outbound context', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const outside = path.join(makeTempDir(), 'outside-secret.txt');
+  fs.writeFileSync(outside, 'OUTSIDE_FILE_MARKER\n');
+  fs.symlinkSync(outside, path.join(repo, 'leak-link'));
+  const stdinFile = path.join(makeTempDir(), 'claude-stdin.md');
+  const env = buildEnv(binDir, { FAKE_CLAUDE_STDIN_FILE: stdinFile });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'review', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const stdin = fs.readFileSync(stdinFile, 'utf8');
+  assert.equal(stdin.includes('OUTSIDE_FILE_MARKER'), false);
+  assert.match(stdin, /leak-link/);
+  assert.match(stdin, /binary, missing, or unreadable/);
+});
+
+test('oversized untracked files are read with a hard byte cap', () => {
+  const repo = tempRepo();
+  const bigPath = path.join(repo, 'big-artifact.txt');
+  const cap = 5 * 1024 * 1024;
+  const body = Buffer.alloc(cap + 1024, 'a');
+  body.write('TAIL_MARKER_BEYOND_CAP', cap + 100);
+  fs.writeFileSync(bigPath, body);
+
+  const target = resolveReviewTarget(repo, { scope: 'working-tree' });
+  const context = collectReviewContext(repo, target);
+  const entry = context.untracked.entries.find(
+    (candidate) => candidate.path === 'big-artifact.txt',
+  );
+
+  assert.ok(entry, 'big file should still be listed');
+  assert.ok(entry.content.length <= cap + 64);
+  assert.equal(entry.content.includes('TAIL_MARKER_BEYOND_CAP'), false);
+  assert.match(entry.content, /\[truncated \d+ bytes\]/);
+});
+
+test('a quiet nonzero Claude exit still reports a usable error answer', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const env = buildEnv(binDir, { FAKE_CLAUDE_MODE: 'nonzero-quiet' });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'task', '--cwd', repo, '--json', 'failing quietly'],
+    { env },
+  );
+
+  assert.equal(result.status, 3);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.answer, 'exit 3');
+});
+
+test('setup reports an unwritable state dir instead of crashing', (t) => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const repo = tempRepo();
+  const lockedRoot = makeTempDir();
+  fs.chmodSync(lockedRoot, 0o500);
+  t.after(() => fs.chmodSync(lockedRoot, 0o700));
+  const env = buildEnv(binDir, {
+    CLAUDE_CODE_COMPANION_STATE_DIR: path.join(lockedRoot, 'state'),
+  });
+
+  const result = run(
+    process.execPath,
+    [COMPANION, 'setup', '--cwd', repo, '--json'],
+    { env },
+  );
+
+  assert.equal(result.status, 1, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.stateWritable, false);
+  assert.match(payload.nextSteps.join('\n'), /permissions/i);
+});
+
+test('MCP in-handler errors keep the request id', () => {
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'prompts/get',
+      params: { name: 'no-such-prompt', arguments: {} },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { input });
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout.trim());
+  assert.equal(response.id, 7);
+  assert.match(response.error.message, /Unknown prompt/);
+});
+
+test('MCP initialize echoes a supported requested protocol version', () => {
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '0.0.0' },
+      },
+    },
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'initialize',
+      params: {
+        protocolVersion: '1999-01-01',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '0.0.0' },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], { input });
+  assert.equal(result.status, 0, result.stderr);
+  const responses = result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(responses[0].result.protocolVersion, '2025-06-18');
+  assert.equal(responses[1].result.protocolVersion, '2024-11-05');
+
+  const manifest = JSON.parse(
+    fs.readFileSync(
+      path.join(PLUGIN_ROOT, '.codex-plugin', 'plugin.json'),
+      'utf8',
+    ),
+  );
+  assert.equal(responses[0].result.serverInfo.version, manifest.version);
+});
+
+test('MCP delegate without a resolvable workspace asks for cwd', () => {
+  const binDir = makeTempDir();
+  installFakeClaude(binDir);
+  const nonGitDir = makeTempDir();
+  const env = buildEnv(binDir, {
+    CODEX_WORKSPACE_ROOT: '',
+    CODEX_PROJECT_DIR: '',
+    CLAUDE_PROJECT_DIR: '',
+    PWD: nonGitDir,
+  });
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'claude_code',
+        arguments: { action: 'delegate', kind: 'diagnose', prompt: 'probe' },
+      },
+    },
+  ]
+    .map((message) => JSON.stringify(message))
+    .join('\n');
+
+  const result = run(process.execPath, [MCP_SERVER], {
+    cwd: nonGitDir,
+    env,
+    input,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const response = JSON.parse(result.stdout.trim());
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /requires cwd/);
 });

@@ -23,6 +23,15 @@ export function parseArgs(argv = process.argv.slice(2), config = {}) {
     const rawKey = equals === -1 ? raw : raw.slice(0, equals);
     const key = aliasMap[rawKey] ?? rawKey;
 
+    // Reject unknown flags loudly. Silently consuming them (and possibly the
+    // following token as their "value") turns an agent's typo into a run with
+    // quietly different behavior — worse than a clear, recoverable error.
+    if (!valueOptions.has(key) && !booleanOptions.has(key)) {
+      throw new Error(
+        `Unknown option "${token}". Pass free text positionally (use -- before text that starts with a dash).`,
+      );
+    }
+
     if (equals !== -1) {
       const value = raw.slice(equals + 1);
       options[key] = booleanOptions.has(key) ? value !== 'false' : value;
@@ -32,14 +41,6 @@ export function parseArgs(argv = process.argv.slice(2), config = {}) {
     if (booleanOptions.has(key)) {
       options[key] = true;
       continue;
-    }
-
-    if (!valueOptions.has(key)) {
-      const next = argv[index + 1];
-      if (!next || next.startsWith('-')) {
-        options[key] = true;
-        continue;
-      }
     }
 
     const next = argv[index + 1];

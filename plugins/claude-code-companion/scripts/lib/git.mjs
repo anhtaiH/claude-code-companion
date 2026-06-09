@@ -6,6 +6,10 @@ const MAX_CONTEXT_CHARS = 6000;
 const MAX_DIFF_CHARS = 24000;
 const MAX_UNTRACKED_FILES = 8;
 const MAX_UNTRACKED_CHARS = 4000;
+// Hard byte cap when reading an untracked file for context and secret
+// scanning. Far above the prompt budget, low enough that a stray multi-GB
+// artifact cannot balloon companion memory.
+const MAX_UNTRACKED_READ_BYTES = 5 * 1024 * 1024;
 
 function trimText(text, limit = MAX_CONTEXT_CHARS) {
   const value = String(text ?? '');
@@ -112,10 +116,30 @@ function safeReadRelative(repoRoot, relPath) {
   const fullPath = path.resolve(repoRoot, relPath);
   const root = path.resolve(repoRoot);
   if (!fullPath.startsWith(`${root}${path.sep}`)) return null;
-  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) return null;
-  const buffer = fs.readFileSync(fullPath);
-  if (buffer.includes(0)) return null;
-  return buffer.toString('utf8');
+  // lstat (not stat): an untracked symlink may point outside the repo, and
+  // following it would send unrelated file contents to Claude.
+  let stat;
+  try {
+    stat = fs.lstatSync(fullPath);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile()) return null;
+  const readBytes = Math.min(stat.size, MAX_UNTRACKED_READ_BYTES);
+  const buffer = Buffer.alloc(readBytes);
+  let bytesRead = 0;
+  const fd = fs.openSync(fullPath, 'r');
+  try {
+    bytesRead = fs.readSync(fd, buffer, 0, readBytes, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const content = buffer.subarray(0, bytesRead);
+  if (content.includes(0)) return null;
+  const text = content.toString('utf8');
+  return stat.size > readBytes
+    ? `${text}\n[truncated ${stat.size - readBytes} bytes]`
+    : text;
 }
 
 function collectUntracked(repoRoot) {

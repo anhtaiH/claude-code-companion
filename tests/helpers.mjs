@@ -110,6 +110,32 @@ if (mode === 'nonzero') {
   console.error('simulated claude failure');
   process.exit(2);
 }
+if (mode === 'nonzero-quiet') {
+  process.exit(3);
+}
+if (mode === 'structured-output') {
+  // Mirrors Claude CLI >= 2.1.x --json-schema behavior: the validated object
+  // arrives in structured_output and result carries no useful text.
+  console.log(JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    duration_ms: 1,
+    result: '',
+    structured_output: {
+      verdict: 'approve-with-nits',
+      summary: 'Structured output carried the review.',
+      findings: [],
+      next_steps: []
+    },
+    session_id: 'fake-session-structured',
+    total_cost_usd: 0.001,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    modelUsage: { fake: { inputTokens: 1, outputTokens: 1, costUSD: 0.001 } },
+    terminal_reason: 'completed'
+  }));
+  process.exit(0);
+}
 if (mode === 'stream-json') {
   console.log(JSON.stringify({
     type: 'assistant',

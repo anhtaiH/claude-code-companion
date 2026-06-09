@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import readline from 'node:readline';
@@ -11,6 +12,40 @@ import { terminateProcessTree } from './lib/process.mjs';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const COMPANION = path.join(SCRIPT_DIR, 'claude-companion.mjs');
 const PLUGIN_ROOT = path.resolve(SCRIPT_DIR, '..');
+
+// Protocol versions this minimal stdio server can honestly serve. Per MCP
+// spec, echo the client's requested version when supported; otherwise answer
+// with our latest known version.
+const SUPPORTED_PROTOCOL_VERSIONS = [
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+];
+
+function negotiateProtocolVersion(requested) {
+  return SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+    ? requested
+    : '2024-11-05';
+}
+
+function serverVersion() {
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.join(PLUGIN_ROOT, '.codex-plugin', 'plugin.json'),
+        'utf8',
+      ),
+    );
+    if (typeof manifest.version === 'string' && manifest.version) {
+      return manifest.version;
+    }
+  } catch {
+    // Fall through to the static default below.
+  }
+  return '1.0.0';
+}
+
+const SERVER_VERSION = serverVersion();
 const DANGEROUS_INPUT_KEYS = [
   'write',
   'edit',
@@ -27,7 +62,7 @@ const tools = [
     name: 'claude_code',
     description: [
       'The single agent-native Claude Code Companion API. Use this from inside Codex to delegate read-only review, adversarial review, diagnosis, planning, or research to the local Claude Code CLI, then return the result to the Codex agent. Also use this same tool to check setup, inspect status, fetch results, or cancel a background delegation. Do not call shell commands directly for normal use.',
-      'Delegations default to Opus 4.8 1M, max effort, Ultracode dynamic workflows, and read-only Claude subagents.',
+      'Delegations default to the flagship opus[1m] model alias (1M context, resolved by your Claude Code CLI), max effort, Ultracode dynamic workflows, and read-only Claude subagents.',
     ].join(' '),
     inputSchema: {
       type: 'object',
@@ -210,6 +245,12 @@ function gitRoot(candidate) {
   return result.stdout.trim() ? path.resolve(result.stdout.trim()) : null;
 }
 
+// Returns the workspace root, or null when nothing in the session environment
+// resolves to a usable git root. The caller decides whether null is fatal:
+// lifecycle actions can fall back (job-id lookup recovers across workspaces),
+// but a delegation must never silently run against the wrong directory — the
+// server's own cwd is the installed plugin root, and "reviewing" that instead
+// of the user's repo is a confusing failure mode.
 function inferWorkspaceCwd(input = {}) {
   if (input.cwd) return path.resolve(input.cwd);
   const candidates = [
@@ -223,13 +264,13 @@ function inferWorkspaceCwd(input = {}) {
     const root = gitRoot(candidate);
     if (root && root !== PLUGIN_ROOT) return root;
   }
-  return process.cwd();
+  return null;
 }
 
 function withResolvedCwd(input = {}) {
   return {
     ...input,
-    cwd: inferWorkspaceCwd(input),
+    cwd: inferWorkspaceCwd(input) ?? undefined,
   };
 }
 
@@ -274,21 +315,28 @@ function reviewFocusText(input = {}) {
   return parts.join('\n\n');
 }
 
-function delegatedTaskPrompt(input = {}) {
+function delegatedTaskPrompt(
+  input = {},
+  fallback = 'Inspect the repository context and report useful findings.',
+) {
   // Per-kind guidance is injected once, by the companion's "## Work Mode"
   // section (derived from lib/kinds.mjs). This server only forwards the user's
   // request and focus so the kind prompt is never double-injected.
   const parts = [];
   if (input.prompt) parts.push(`Request: ${String(input.prompt)}`);
   if (input.focus) parts.push(`Focus: ${input.focus}`);
-  if (!parts.length)
-    parts.push('Inspect the repository context and report useful findings.');
+  if (!parts.length) parts.push(fallback);
   return parts.join('\n\n');
 }
 
 function delegateArgs(input = {}) {
   if (!input.kind) {
     throw new Error('action delegate requires kind');
+  }
+  if (!input.cwd) {
+    throw new Error(
+      'action delegate requires cwd: pass the absolute workspace root. The server could not infer it from the session environment.',
+    );
   }
 
   if (input.kind === 'review') {
@@ -306,7 +354,10 @@ function delegateArgs(input = {}) {
     pushReviewTargetArgs(args, input);
     args.push(
       '--',
-      delegatedTaskPrompt(input) || 'Challenge the current change.',
+      delegatedTaskPrompt(
+        input,
+        'Challenge the current change for hidden assumptions, rollback gaps, and unsafe boundaries.',
+      ),
     );
     return args;
   }
@@ -526,13 +577,21 @@ function getPrompt(name, input = {}) {
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', async (line) => {
   if (!line.trim()) return;
+  // Track the request id outside the try so an in-handler failure (for
+  // example an unknown prompt name) still produces a correlatable error
+  // response instead of an id-less one the client cannot match and may wait
+  // on forever.
+  let messageId = null;
   try {
     const message = JSON.parse(line);
+    messageId = message.id ?? null;
     if (message.method === 'initialize') {
       respond(message.id, {
-        protocolVersion: '2024-11-05',
+        protocolVersion: negotiateProtocolVersion(
+          message.params?.protocolVersion,
+        ),
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'claude', version: '1.0.0' },
+        serverInfo: { name: 'claude', version: SERVER_VERSION },
       });
     } else if (message.method === 'tools/list') {
       respond(message.id, { tools });
@@ -552,6 +611,9 @@ rl.on('line', async (line) => {
       respond(message.id, {});
     }
   } catch (error) {
-    respondError(null, error instanceof Error ? error.message : String(error));
+    respondError(
+      messageId,
+      error instanceof Error ? error.message : String(error),
+    );
   }
 });

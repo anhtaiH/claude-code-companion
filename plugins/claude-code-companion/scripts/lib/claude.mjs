@@ -2,9 +2,15 @@ import fs from 'node:fs';
 import process from 'node:process';
 import { binaryAvailable, runSync } from './process.mjs';
 
-const READ_ONLY_TOOLS = 'Read,Glob,Grep,Bash,Agent';
+// Read-only posture is enforced with --allowedTools (auto-allowed read set;
+// anything else is denied in headless print mode) plus --disallowedTools (a
+// hard blocklist). The base set is deliberately NOT restricted with --tools:
+// on Claude Code 2.1.x that flag breaks --json-schema structured output (the
+// run dies with a spurious prompt_too_long), and it adds no enforcement the
+// other two layers do not already provide.
 const READ_ONLY_ALLOWED_TOOLS =
   'Read,Glob,Grep,Agent,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)';
+const READ_ONLY_DISALLOWED_TOOLS = 'Edit,Write,NotebookEdit';
 const WRITE_TOOLS = /\b(?:Edit|Write)\b/;
 const DEFAULT_MODEL = 'opus[1m]';
 const DEFAULT_EFFORT = 'max';
@@ -19,7 +25,7 @@ const AGENT_ALLOWED_TOOLS = [
   'Bash(git log:*)',
   'Bash(git show:*)',
 ];
-const AGENT_DISALLOWED_TOOLS = ['Edit', 'Write'];
+const AGENT_DISALLOWED_TOOLS = ['Edit', 'Write', 'NotebookEdit'];
 
 export function getClaudeAvailability(cwd) {
   const availability = binaryAvailable('claude', ['--version'], { cwd });
@@ -72,9 +78,8 @@ export function getClaudeDefaults() {
     effort: DEFAULT_EFFORT,
     ultracode: true,
     subagents: Object.keys(buildCompanionAgents()),
-    tools: READ_ONLY_TOOLS,
     allowedTools: READ_ONLY_ALLOWED_TOOLS,
-    disallowedTools: 'Edit,Write',
+    disallowedTools: READ_ONLY_DISALLOWED_TOOLS,
   };
 }
 
@@ -203,12 +208,10 @@ function buildClaudeArgs(options = {}) {
     '-p',
     '--output-format',
     'json',
-    '--tools',
-    READ_ONLY_TOOLS,
     '--allowedTools',
     READ_ONLY_ALLOWED_TOOLS,
     '--disallowedTools',
-    'Edit,Write',
+    READ_ONLY_DISALLOWED_TOOLS,
   ];
   if (options.resumeSessionId) args.push('--resume', options.resumeSessionId);
   args.push('--model', String(options.model || DEFAULT_MODEL));
@@ -403,6 +406,17 @@ export function runClaudePrint(cwd, prompt, options = {}) {
   const raw = parsed.raw;
   const parseError = parsed.parseError;
   const status = result.ok && raw != null ? result.status : result.status || 1;
+  // Claude Code returns --json-schema output in a dedicated
+  // `structured_output` field of the result event; `result` then carries only
+  // the (often empty) final prose. Prefer the schema-validated payload
+  // whenever it is present.
+  const structuredOutput = raw?.structured_output;
+  const structuredText =
+    structuredOutput == null
+      ? ''
+      : typeof structuredOutput === 'string'
+        ? structuredOutput
+        : JSON.stringify(structuredOutput);
   const rawResultText =
     typeof raw?.result === 'string'
       ? raw.result
@@ -411,13 +425,14 @@ export function runClaudePrint(cwd, prompt, options = {}) {
         : JSON.stringify(raw.result);
   const assistantText = parsed.assistantText.trim();
   const finalAssistantText = parsed.finalAssistantText.trim();
-  const resultText =
+  const fallbackResultText =
     finalAssistantText &&
     (rawResultText.trim().length <= 1 ||
       isProgressOnlyResultText(rawResultText) ||
       finalAssistantText.length > rawResultText.trim().length * 2)
       ? finalAssistantText
       : rawResultText || finalAssistantText || assistantText;
+  const resultText = structuredText || fallbackResultText;
 
   return {
     ok: result.ok && raw != null,
@@ -428,8 +443,9 @@ export function runClaudePrint(cwd, prompt, options = {}) {
     raw,
     eventCount: parsed.eventCount,
     resultText,
-    resultTextSource:
-      resultText === finalAssistantText && finalAssistantText
+    resultTextSource: structuredText
+      ? 'structured-output'
+      : resultText === finalAssistantText && finalAssistantText
         ? 'assistant-events'
         : 'result-event',
     sessionId: raw?.session_id ?? null,
@@ -445,7 +461,16 @@ export function runClaudePrint(cwd, prompt, options = {}) {
 }
 
 export function readJsonSchema(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const schema = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  // Claude's structured-output endpoint rejects schemas that carry the
+  // standard `$schema`/`$id` meta keys — silently, by skipping enforcement
+  // entirely, which degrades every schema review. Strip them at this boundary
+  // and keep them in the on-disk document for editors and validators.
+  if (schema && typeof schema === 'object') {
+    delete schema.$schema;
+    delete schema.$id;
+  }
+  return schema;
 }
 
 export function extractJsonObject(value) {

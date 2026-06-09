@@ -72,11 +72,12 @@ The installer adds the `claude` Codex plugin and registers the
 exposes it, and otherwise falls back to the bundled companion script.
 
 The companion drives your local Claude Code CLI and login. By default it asks
-for Opus 4.8 (1M context) at max effort with dynamic workflows, plus read-only
-specialist subagents for code research, test gaps, security, architecture,
-release risk, and log diagnosis. Claude inspects the repo with read-only tools
-only — it never edits files, and that boundary is enforced at the MCP, CLI, and
-Claude-argument layers.
+for the flagship `opus[1m]` model alias (1M context, resolved to the newest
+flagship by your Claude Code CLI) at max effort with dynamic workflows, plus
+read-only specialist subagents for code research, test gaps, security,
+architecture, release risk, and log diagnosis. Claude inspects the repo with
+read-only tools only — it never edits files, and that boundary is enforced at
+the MCP, CLI, and Claude-argument layers.
 
 Before each call the companion scans the diff, untracked files, your prompt, and
 repo instructions for secret-like content. By default it records a warning and
